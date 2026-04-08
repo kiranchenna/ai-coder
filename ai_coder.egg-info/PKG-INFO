@@ -1,3 +1,22 @@
+Metadata-Version: 2.4
+Name: ai-coder
+Version: 2.0.0
+Summary: AI-powered coding assistant CLI — local, offline, powerful
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: langchain-ollama>=0.2.0
+Requires-Dist: langchain-core>=0.3.0
+Requires-Dist: rich>=13.0.0
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: ddgs>=9.0.0
+Requires-Dist: httpx>=0.27.0
+Requires-Dist: beautifulsoup4>=4.12.0
+Requires-Dist: packaging>=24.0
+Requires-Dist: pathspec>=0.12.0
+Requires-Dist: chromadb>=0.5.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+
 # AICoder ✨
 
 > An AI-powered coding assistant CLI — local, offline, and professional.
