@@ -205,6 +205,47 @@ class AgentSession:
 
 # ── REPL ───────────────────────────────────────────────────────────────────────
 
+def _knowledge_learn(topic: str, kb) -> None:
+    """Proactively research a topic (or fetch a URL) and cache it globally."""
+    from tools.web_tools import fetch_url, format_search_results, search_web
+
+    # Direct URL → fetch and cache that page.
+    if topic.startswith("http://") or topic.startswith("https://"):
+        page = fetch_url(topic)
+        if page.startswith("[Error") or page.startswith("[Non-text"):
+            console.print(f"[yellow]{page}[/yellow]")
+            return
+        n = kb.add(page, source=topic, title=topic, ttl_hours=48, project="")
+        console.print(f"[green]Learned {n} chunk(s) from {topic}.[/green]")
+        return
+
+    # Topic → web search, then fetch the top couple of pages for depth.
+    console.print(f"[dim]🌐 Researching: {topic}…[/dim]")
+    results = search_web(topic)
+    if not results:
+        console.print(f"[yellow]No web results for '{topic}'.[/yellow]")
+        return
+
+    total = kb.add(format_search_results(results), source="web-search", title=topic,
+                   ttl_hours=12, project="")
+    sources = ["web-search results"]
+    for r in results[:2]:
+        url = r.get("href") or r.get("url", "")
+        if not url:
+            continue
+        page = fetch_url(url)
+        if page and not page.startswith("[Error") and not page.startswith("[Non-text") \
+                and len(page) > 200:
+            total += kb.add(page, source=url, title=r.get("title", topic),
+                            ttl_hours=48, project="")
+            sources.append(url)
+
+    console.print(f"[green]Learned '{topic}' — cached {total} chunk(s) from "
+                  f"{len(sources)} source(s).[/green]")
+    for s in sources:
+        console.print(f"  [dim]• {s}[/dim]")
+
+
 def _handle_command(raw: str, session: "AgentSession", workspace: Path) -> None:
     """Handle a /slash command in the agent REPL."""
     from core.config import get_config
@@ -221,7 +262,7 @@ def _handle_command(raw: str, session: "AgentSession", workspace: Path) -> None:
                 "[bold]/model [name][/bold] show or switch the model for this session\n"
                 "[bold]/tools[/bold]        list the agent's tools\n"
                 "[bold]/memory[/bold]       show what's remembered about this project\n"
-                "[bold]/knowledge[/bold]    show RAG stats; '/knowledge clear[ all]' to clear\n"
+                "[bold]/knowledge[/bold]    RAG: 'learn <topic|URL>', stats, 'clear[ all]'\n"
                 "[bold]/clear[/bold]        forget this conversation (keeps saved memory)\n"
                 "[bold]/help[/bold]         this help\n"
                 "[bold]exit[/bold]          quit\n\n"
@@ -259,7 +300,14 @@ def _handle_command(raw: str, session: "AgentSession", workspace: Path) -> None:
         sub = arg.split()
         action = sub[0].lower() if sub else ""
         try:
-            if action == "clear" and len(sub) > 1 and sub[1].lower() == "all":
+            if action == "learn":
+                parts = arg.split(maxsplit=1)
+                topic = parts[1].strip() if len(parts) > 1 else ""
+                if not topic:
+                    console.print("[yellow]Usage: /knowledge learn <topic or URL>[/yellow]")
+                else:
+                    _knowledge_learn(topic, kb)
+            elif action == "clear" and len(sub) > 1 and sub[1].lower() == "all":
                 n = kb.clear_all()
                 console.print(f"[green]Cleared the entire knowledge base ({n} chunk(s)).[/green]")
             elif action == "clear":
@@ -276,8 +324,9 @@ def _handle_command(raw: str, session: "AgentSession", workspace: Path) -> None:
                         f"Total chunks: {info['total_chunks']}\n"
                         f"This project:  {here}\n"
                         f"Storage:       {info['storage_path']}\n\n"
-                        "[dim]/knowledge clear      — clear this project's documents\n"
-                        "/knowledge clear all  — wipe everything[/dim]",
+                        "[dim]/knowledge learn <topic|URL> — research & cache\n"
+                        "/knowledge clear              — clear this project's documents\n"
+                        "/knowledge clear all          — wipe everything[/dim]",
                         title="[cyan]Knowledge base[/cyan]",
                         border_style="cyan",
                     )
