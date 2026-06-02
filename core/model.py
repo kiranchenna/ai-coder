@@ -10,10 +10,66 @@ now returns structured tool calls that the agent loop executes directly.
 
 from __future__ import annotations
 
+import json
 from typing import Sequence
 
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage
+
+
+# ── Tool-call recovery from text ────────────────────────────────────────────────
+# Some local models (e.g. qwen2.5-coder over Ollama) emit tool calls as JSON text
+# in the message content instead of via native tool calling. These helpers recover
+# them so the agent loop can execute them anyway.
+
+def balanced_json_objects(text: str) -> list[str]:
+    """Extract top-level {...} substrings via brace matching (string-aware)."""
+    objects: list[str] = []
+    depth = 0
+    start = -1
+    in_str = False
+    escape = False
+    for i, ch in enumerate(text):
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    objects.append(text[start : i + 1])
+    return objects
+
+
+def extract_text_tool_calls(content: str) -> list[dict]:
+    """
+    Recover tool calls a model emitted as JSON *text* rather than natively.
+    Looks for {"name": ..., "arguments"/"args"/"parameters": {...}} objects.
+    Returns dicts shaped like native tool calls: {name, args, id}.
+    """
+    calls: list[dict] = []
+    for candidate in balanced_json_objects(content or ""):
+        try:
+            obj = json.loads(candidate)
+        except Exception:
+            continue
+        if not isinstance(obj, dict) or "name" not in obj:
+            continue
+        args = obj.get("arguments", obj.get("args", obj.get("parameters", {})))
+        if isinstance(args, dict):
+            calls.append({"name": obj["name"], "args": args, "id": ""})
+    return calls
 
 
 def get_chat_model(precise: bool = False, tools: Sequence | None = None):
@@ -76,15 +132,25 @@ def selftest() -> bool:
         console.print("[dim]Is Ollama running, and is the model pulled?[/dim]")
         return False
 
-    calls = getattr(ai, "tool_calls", None) or []
-    if calls:
+    native = getattr(ai, "tool_calls", None) or []
+    if native:
         console.print(f"[green]✓ Native tool calling works[/green] — model requested: "
-                      f"{', '.join(c.get('name', '?') for c in calls)}")
+                      f"{', '.join(c.get('name', '?') for c in native)}")
+        return True
+
+    # Many local models emit the tool call as JSON text instead — the agent loop
+    # recovers and executes these, so this still counts as working.
+    text_calls = [c for c in extract_text_tool_calls(ai.content or "") if c["name"] == "get_time"]
+    if text_calls:
+        console.print(
+            "[green]✓ Tool calling works via text-call recovery[/green] — this model emits "
+            "tool calls as text rather than natively, and the agent handles that."
+        )
         return True
 
     console.print(
-        "[yellow]✗ Model responded without calling the tool.[/yellow]\n"
-        "[dim]This model may not support native tool calling well. "
+        "[yellow]✗ Model responded without calling the tool (natively or as text).[/yellow]\n"
+        "[dim]This model may not support tool calling well. "
         "Try a stronger one, e.g.: ollama pull qwen2.5-coder:7b[/dim]"
     )
     return False

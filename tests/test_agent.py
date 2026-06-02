@@ -4,7 +4,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from agent.loop import _balanced_json_objects, _extract_text_tool_calls
+from core.model import balanced_json_objects as _balanced_json_objects
+from core.model import extract_text_tool_calls as _extract_text_tool_calls
 from agent.planner import _parse_tasks
 from core.project import detect_test_command
 from memory.project import ProjectMemory
