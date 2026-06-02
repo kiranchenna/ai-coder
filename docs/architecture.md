@@ -79,7 +79,7 @@ cli.py
         ├── "plan <goal>"  →  agent/planner.py  →  task list → AgentSession per task
         ├── "/command"     →  _handle_command (model/tools/memory/clear)
         └── plain English  →  AgentSession.send():
-                                 model.invoke(history + tools)
+                                 model.stream(history + tools)  (live tokens)
                                    ├── native tool_calls → execute → feed back
                                    ├── else text tool-calls → recover → execute → feed back
                                    └── else → final answer

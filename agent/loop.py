@@ -25,10 +25,11 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from rich.console import Console
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
-from rich.status import Status
+from rich.text import Text
 
 from core.model import balanced_json_objects, extract_text_tool_calls, get_chat_model
 from agent.prompts import system_prompt
@@ -169,12 +170,30 @@ class AgentSession:
     # ── Internals ─────────────────────────────────────────────────────────────
 
     def _invoke(self) -> AIMessage:
-        status = Status("[dim italic]💭 Thinking…[/dim italic]", console=console)
-        status.start()
+        """
+        Stream the model's response token-by-token into a transient live region.
+
+        The preview is erased when the stream ends (transient=True), so tool-call
+        JSON doesn't linger; final answers are re-rendered as Markdown by send().
+        Returns the accumulated message (with any tool_calls).
+        """
+        accumulated = None
+        shown = ""
         try:
-            return self.llm.invoke(self.messages)
-        finally:
-            status.stop()
+            with Live(console=console, refresh_per_second=10, transient=True) as live:
+                live.update(Text("💭 Thinking…", style="dim italic"))
+                for chunk in self.llm.stream(self.messages):
+                    accumulated = chunk if accumulated is None else accumulated + chunk
+                    piece = chunk.content or ""
+                    if piece:
+                        shown += piece
+                        live.update(Text(shown))
+        except Exception as e:  # noqa: BLE001 — surface model/Ollama failures gracefully
+            console.print(f"\n[red]⚠ LLM error: {e}[/red]")
+            console.print("[dim]Is Ollama running? Try: ollama serve[/dim]")
+            return AIMessage(content="")
+
+        return accumulated if accumulated is not None else AIMessage(content="")
 
     def _render_call(self, call: dict) -> None:
         name = call.get("name", "?")

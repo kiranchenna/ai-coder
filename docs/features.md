@@ -67,7 +67,9 @@ commands are handled by the REPL (`agent/loop.py`):
 
 Per user turn (`AgentSession.send`):
 
-1. The model is invoked with the conversation + bound tools.
+1. The model is streamed with the conversation + bound tools (tokens appear
+   live in a transient region; tool-call noise is erased, final answers render
+   as Markdown).
 2. **Native tool calls** are executed; each result is fed back as a tool message.
 3. **Fallback:** if the model emitted tool calls as JSON *text* instead of
    natively (common with local models like `qwen2.5-coder`), they are recovered
