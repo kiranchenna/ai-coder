@@ -208,4 +208,93 @@ def build_tools(workspace: Path) -> list:
             out = out[:MAX_SHELL_OUTPUT] + "\n[... output truncated ...]"
         return f"exit code: {code}\n{out}".strip()
 
-    return [list_files, find_files, search_code, read_file, write_file, edit_file, run_shell]
+    @tool
+    def research(query: str) -> str:
+        """Research a topic on the web for CURRENT, up-to-date information — library
+        versions, new APIs, recent best practices the model may not know. Checks the local
+        knowledge base first; if nothing fresh is cached, searches the web, caches the
+        findings, and returns them WITH their source URLs. Use this whenever you are unsure
+        about current/external facts instead of guessing."""
+        from rag.store import KnowledgeBase
+        from tools.web_tools import search_web, format_search_results
+        from tools.web_tools import fetch_url as _fetch
+
+        kb = KnowledgeBase.get()
+        try:
+            cached = kb.search(query, n=4)
+        except Exception:
+            cached = []
+        if cached:
+            body = "\n\n---\n\n".join(
+                f"[source: {c['metadata'].get('source') or c['metadata'].get('title') or 'cached'}]\n"
+                f"{c['content']}"
+                for c in cached
+            )
+            return f"(from cached knowledge)\n\n{body}"
+
+        results = search_web(query)
+        if not results:
+            return f"No web results found for '{query}'."
+        summary = format_search_results(results)
+        try:
+            kb.add(summary, source="web-search", title=query, ttl_hours=12)
+        except Exception:
+            pass
+
+        extra = ""
+        url = results[0].get("href") or results[0].get("url", "")
+        if url:
+            page = _fetch(url)
+            if page and not page.startswith("[Error") and not page.startswith("[Non-text") \
+                    and len(page) > 200:
+                try:
+                    kb.add(page, source=url, title=results[0].get("title", query), ttl_hours=48)
+                except Exception:
+                    pass
+                extra = f"\n\n---\n\n**Source: {url}**\n\n{page[:2500]}"
+        return f"{summary}{extra}"
+
+    @tool
+    def fetch_url(url: str) -> str:
+        """Fetch a specific web page (e.g. an official docs page), extract its readable text,
+        cache it in the knowledge base, and return the content. Use when you already have a
+        specific URL to read."""
+        from rag.store import KnowledgeBase
+        from tools.web_tools import fetch_url as _fetch
+
+        page = _fetch(url)
+        if page.startswith("[Error") or page.startswith("[Non-text"):
+            return page
+        try:
+            KnowledgeBase.get().add(page, source=url, title=url, ttl_hours=48)
+        except Exception:
+            pass
+        if len(page) > MAX_READ_CHARS:
+            page = page[:MAX_READ_CHARS] + "\n[... truncated ...]"
+        return page
+
+    @tool
+    def rag_search(query: str) -> str:
+        """Search your local knowledge base — web pages and documents you have already
+        researched or ingested — for information relevant to the query. Use this to recall
+        things you've learned before before searching the web again."""
+        from rag.store import KnowledgeBase
+
+        try:
+            # Looser cutoff for recall than for the research cache-hit decision.
+            results = KnowledgeBase.get().search(query, n=5, max_distance=0.65)
+        except Exception as e:
+            return f"ERROR: knowledge base unavailable: {e}"
+        if not results:
+            return "Nothing relevant found in the knowledge base yet."
+        return "\n\n---\n\n".join(
+            f"[source: {r['metadata'].get('source') or r['metadata'].get('title') or 'cached'}]\n"
+            f"{r['content']}"
+            for r in results
+        )
+
+    return [
+        list_files, find_files, search_code, read_file,
+        write_file, edit_file, run_shell,
+        research, fetch_url, rag_search,
+    ]

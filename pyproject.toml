@@ -26,7 +26,7 @@ aicoder = "aicoder_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["core*", "tools*", "commands*", "aicoder_cli*", "phases*", "agent*"]
+include = ["core*", "tools*", "commands*", "aicoder_cli*", "phases*", "agent*", "rag*"]
 
 [tool.setuptools.package-data]
 "*" = ["*.yaml", "*.md"]
