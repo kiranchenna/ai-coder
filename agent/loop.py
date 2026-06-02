@@ -345,6 +345,7 @@ def _handle_command(raw: str, session: "AgentSession", workspace: Path) -> None:
                 "[bold]resume[/bold]        continue an in-progress plan\n"
                 "[bold]/model [name][/bold] show or switch the model for this session\n"
                 "[bold]/tools[/bold]        list the agent's tools\n"
+                "[bold]/diff[/bold]         show the git diff of changes so far\n"
                 "[bold]/memory[/bold]       show what's remembered about this project\n"
                 "[bold]/knowledge[/bold]    RAG: 'learn <topic|URL>', stats, 'clear[ all]'\n"
                 "[bold]/clear[/bold]        forget this conversation (keeps saved memory)\n"
@@ -357,6 +358,17 @@ def _handle_command(raw: str, session: "AgentSession", workspace: Path) -> None:
         )
     elif name == "tools":
         console.print("[bold]Tools:[/bold] " + ", ".join(session.tools_by_name))
+    elif name == "diff":
+        from rich.syntax import Syntax
+        from tools.shell_tools import run_command
+
+        out, err, code = run_command("git diff HEAD", cwd=workspace, stream_output=False)
+        if code != 0:
+            console.print(f"[yellow]Not a git repo, or git error: {(err or out).strip()}[/yellow]")
+        elif not out.strip():
+            console.print("[dim]No changes vs HEAD.[/dim]")
+        else:
+            console.print(Syntax(out, "diff", theme="monokai", word_wrap=True))
     elif name == "model":
         cfg = get_config()
         if not arg:

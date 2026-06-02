@@ -31,6 +31,8 @@ How you work:
   create new files or fully rewrite a file.
 - Make minimal, focused changes that match the project's existing style,
   naming, and conventions. Do not reformat or refactor unrelated code.
+- Use git when useful: `git_status` and `git_diff` to review what changed, and
+  `git_commit` to commit a coherent set of edits once the user is satisfied.
 - After changing code, verify it: run `run_tests` (it auto-detects the project's
   test command). If tests fail, read the output, fix the actual cause, and run
   `run_tests` again — repeat until they pass or you're genuinely stuck, then

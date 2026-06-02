@@ -89,6 +89,45 @@ def test_is_fetch_error():
     assert is_fetch_error("# Real Page\n\nActual content here.") is False
 
 
+# ─── edit_file fuzzy matching ─────────────────────────────────────────────────
+
+def test_locate_edit_exact():
+    from agent.tools import locate_edit
+    content = "line one\nline two\nline three\n"
+    start, end, how = locate_edit(content, "line two")
+    assert how == "exact"
+    assert content[start:end] == "line two"
+
+
+def test_locate_edit_ambiguous():
+    from agent.tools import locate_edit
+    res = locate_edit("x = 1\nx = 1\n", "x = 1")
+    assert res[0] is None and res[1] == "ambiguous"
+
+
+def test_locate_edit_trailing_whitespace_tolerant():
+    from agent.tools import locate_edit
+    # model added trailing spaces the file doesn't have → exact fails, fuzzy matches
+    content = "def f():\n    return 1\n"
+    start, end, how = locate_edit(content, "def f():\n    return 1   ")
+    assert how == "fuzzy"
+    assert content[start:end] == "def f():\n    return 1"
+
+
+def test_locate_edit_indentation_tolerant():
+    from agent.tools import locate_edit
+    content = "class A:\n        x = 1\n"   # 8-space indent in file
+    start, end, how = locate_edit(content, "class A:\n    x = 1")  # model used 4
+    assert how == "fuzzy"
+    assert content[start:end] == "class A:\n        x = 1"
+
+
+def test_locate_edit_not_found():
+    from agent.tools import locate_edit
+    res = locate_edit("hello world\n", "nonexistent text")
+    assert res[0] is None and res[1] == "not_found"
+
+
 # ─── History compaction (context management) ──────────────────────────────────
 
 def _mk_session_with_history(messages, budget):

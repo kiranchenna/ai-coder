@@ -27,6 +27,12 @@ paths are sandboxed to the workspace.
 | `edit_file(path, old_string, new_string)` | Replace an exact, unique snippet (diff + confirm) |
 | `run_shell(command)` | Run a shell command (confirmation per config) |
 | `run_tests()` | Auto-detect and run the test suite, report pass/fail |
+| `git_status()` / `git_diff(path)` | Review changes (read-only) |
+| `git_commit(message)` | Stage (excluding `.bak`) and commit (confirmation per config) |
+
+`edit_file` tolerates minor whitespace/indentation differences: it matches at
+line granularity (so a whole line is replaced, never a fragment) and replaces
+using the file's actual text.
 
 ### Research & knowledge (RAG)
 | Tool | Description |
@@ -55,6 +61,7 @@ commands are handled by the REPL (`agent/loop.py`):
 | `resume` | Continue an in-progress plan |
 | `/model [name]` | Show or switch the model for this session |
 | `/tools` | List the agent's tools |
+| `/diff` | Show the git diff of changes so far |
 | `/memory` | Show what's remembered about this project |
 | `/knowledge` | RAG: `/knowledge learn <topic\|URL>` researches & caches; bare shows stats; `/knowledge clear` clears this project's docs, `/knowledge clear all` wipes everything |
 | `/clear` | Forget the conversation (keeps saved memory) |

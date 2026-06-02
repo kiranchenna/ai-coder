@@ -11,6 +11,7 @@ All file paths are relative to the workspace root and sandboxed to it.
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 
 from langchain_core.tools import tool
@@ -24,6 +25,57 @@ console = Console()
 
 MAX_READ_CHARS = 20_000
 MAX_SHELL_OUTPUT = 6_000
+
+
+def locate_edit(content: str, old: str) -> tuple[int, int, str] | tuple[None, str]:
+    """
+    Find where `old` occurs in `content`, tolerating whitespace differences that
+    trip up small models. Returns (start, end, how) for a single match, or
+    (None, reason) where reason is "ambiguous" or "not_found".
+
+    Match precedence: exact → trailing-whitespace-insensitive (per line) →
+    indentation/whitespace-insensitive (per line, stripped). Looser tiers only
+    apply when the exact tier finds nothing, and a tier matching >1 place is
+    reported ambiguous rather than guessed.
+    """
+    content_lines = content.split("\n")
+    old_lines = old.split("\n")
+    n = len(old_lines)
+
+    # char offset where each content line starts
+    offsets, pos = [], 0
+    for ln in content_lines:
+        offsets.append(pos)
+        pos += len(ln) + 1  # + newline
+
+    def line_span(i: int) -> tuple[int, int]:
+        last = i + n - 1
+        return offsets[i], offsets[last] + len(content_lines[last])
+
+    # Line-aligned tiers first (so a whole logical line is replaced, never a
+    # fragment mid-indentation): exact lines → trailing-ws-insensitive →
+    # indentation/whitespace-insensitive.
+    if 0 < n <= len(content_lines):
+        for label, norm in (("exact", lambda s: s),
+                            ("fuzzy", lambda s: s.rstrip()),
+                            ("fuzzy", lambda s: s.strip())):
+            target = [norm(l) for l in old_lines]
+            cnorm = [norm(l) for l in content_lines]
+            hits = [i for i in range(len(content_lines) - n + 1) if cnorm[i:i + n] == target]
+            if len(hits) == 1:
+                start, end = line_span(hits[0])
+                return start, end, label
+            if len(hits) > 1:
+                return None, "ambiguous"
+
+    # Fallback: within-line substring (sub-line edits / renames).
+    sub = content.count(old)
+    if sub == 1:
+        i = content.index(old)
+        return i, i + len(old), "exact"
+    if sub > 1:
+        return None, "ambiguous"
+    return None, "not_found"
 
 
 def _format_hits(hits: list[dict]) -> str:
@@ -131,9 +183,10 @@ def build_tools(workspace: Path) -> list:
 
     @tool
     def edit_file(path: str, old_string: str, new_string: str) -> str:
-        """Replace one exact occurrence of old_string with new_string in an existing file.
-        old_string must match the file exactly (including whitespace/indentation) and must be
-        unique. Include enough surrounding context to make it unique. Shows a diff to confirm."""
+        """Replace one occurrence of old_string with new_string in an existing file.
+        old_string should match the file's text and be unique; matching tolerates minor
+        whitespace/indentation differences, but include enough surrounding context to be
+        unambiguous. Shows a diff to confirm."""
         try:
             original = ft.read_file(workspace, path)
         except (FileNotFoundError, IsADirectoryError, PermissionError) as e:
@@ -141,16 +194,21 @@ def build_tools(workspace: Path) -> list:
 
         if old_string == new_string:
             return "ERROR: old_string and new_string are identical — nothing to change."
-        occurrences = original.count(old_string)
-        if occurrences == 0:
-            return ("ERROR: old_string was not found in the file. Read the file again and "
-                    "copy the exact text (including indentation) you want to replace.")
-        if occurrences > 1:
-            return (f"ERROR: old_string appears {occurrences} times — it must be unique. "
-                    "Include more surrounding lines so it matches exactly one location.")
 
-        updated = original.replace(old_string, new_string)
-        return _apply_write(workspace, path, updated, existing=original)
+        located = locate_edit(original, old_string)
+        if located[0] is None:
+            if located[1] == "ambiguous":
+                return ("ERROR: old_string matches more than one place — it must be unique. "
+                        "Include more surrounding lines so it matches exactly one location.")
+            return ("ERROR: old_string was not found in the file. Read the file again and "
+                    "copy the exact text you want to replace.")
+
+        start, end, how = located
+        updated = original[:start] + new_string + original[end:]
+        result = _apply_write(workspace, path, updated, existing=original)
+        if how == "fuzzy" and not result.startswith("ERROR") and not result.startswith("User declined"):
+            result += " (matched ignoring whitespace)"
+        return result
 
     @tool
     def search_code(query: str, path: str = ".") -> str:
@@ -257,6 +315,51 @@ def build_tools(workspace: Path) -> list:
         if len(page) > MAX_READ_CHARS:
             page = page[:MAX_READ_CHARS] + "\n[... truncated ...]"
         return page
+
+    @tool
+    def git_status() -> str:
+        """Show the project's git status (changed and untracked files). Read-only."""
+        from tools.shell_tools import run_command
+
+        out, err, code = run_command("git status --short --branch", cwd=workspace,
+                                     stream_output=False)
+        if code != 0:
+            return f"git status failed: {(err or out).strip()}"
+        return out.strip() or "(working tree clean)"
+
+    @tool
+    def git_diff(path: str = "") -> str:
+        """Show the working-tree git diff (unstaged + staged changes) for the project,
+        optionally limited to one path. Read-only — use this to review what you changed."""
+        from tools.shell_tools import run_command
+
+        cmd = "git diff HEAD" + (f" -- {shlex.quote(path)}" if path else "")
+        out, err, code = run_command(cmd, cwd=workspace, stream_output=False)
+        if code != 0:
+            return f"git diff failed: {(err or out).strip()}"
+        out = out.strip()
+        if not out:
+            return "(no changes vs HEAD)"
+        if len(out) > MAX_READ_CHARS:
+            out = out[:MAX_READ_CHARS] + "\n[... diff truncated ...]"
+        return out
+
+    @tool
+    def git_commit(message: str) -> str:
+        """Stage all changes and create a git commit with the given message. The user may be
+        asked to confirm. Use after a coherent set of edits the user is satisfied with."""
+        # Stage everything except the agent's .bak backups, then commit.
+        result = run_with_confirmation(
+            f"git add -A && git reset -q -- '*.bak' && git commit -m {shlex.quote(message)}",
+            cwd=workspace,
+        )
+        if result is None:
+            return "The user declined to commit."
+        out, err, code = result
+        combined = (out + ("\n" + err if err else "")).strip()
+        if code != 0:
+            return f"Commit failed (exit {code}):\n{combined}"
+        return f"Committed.\n{combined}"
 
     @tool
     def remember(note: str, category: str = "note") -> str:
@@ -375,5 +478,6 @@ def build_tools(workspace: Path) -> list:
         list_files, find_files, search_code, read_file,
         write_file, edit_file, run_shell,
         research, fetch_url, rag_search, read_document, run_tests,
+        git_status, git_diff, git_commit,
         remember, recall,
     ]
