@@ -206,6 +206,10 @@ class AgentSession:
         preview = ", ".join(f"{k}={_short(v)}" for k, v in args.items())
         console.print(f"[cyan]→ {name}[/cyan]([dim]{preview}[/dim])")
 
+    def reset(self) -> None:
+        """Forget the conversation, keeping the system prompt (and saved memory)."""
+        self.messages = self.messages[:1]
+
     def _exec(self, call: dict) -> str:
         name = call.get("name", "")
         args = call.get("args", {}) or {}
@@ -225,6 +229,58 @@ class AgentSession:
 
 # ── REPL ───────────────────────────────────────────────────────────────────────
 
+def _handle_command(raw: str, session: "AgentSession", workspace: Path) -> None:
+    """Handle a /slash command in the agent REPL."""
+    from core.config import get_config
+
+    parts = raw[1:].split(maxsplit=1)
+    name = (parts[0] if parts else "").lower()
+    arg = parts[1].strip() if len(parts) > 1 else ""
+
+    if name in ("help", "h", "?"):
+        console.print(
+            Panel(
+                "[bold]plan <goal>[/bold]   decompose a goal into tasks and build it\n"
+                "[bold]resume[/bold]        continue an in-progress plan\n"
+                "[bold]/model [name][/bold] show or switch the model for this session\n"
+                "[bold]/tools[/bold]        list the agent's tools\n"
+                "[bold]/memory[/bold]       show what's remembered about this project\n"
+                "[bold]/clear[/bold]        forget this conversation (keeps saved memory)\n"
+                "[bold]/help[/bold]         this help\n"
+                "[bold]exit[/bold]          quit\n\n"
+                "[dim]Or just describe a task in plain English.[/dim]",
+                title="[cyan]AICoder commands[/cyan]",
+                border_style="cyan",
+            )
+        )
+    elif name == "tools":
+        console.print("[bold]Tools:[/bold] " + ", ".join(session.tools_by_name))
+    elif name == "model":
+        cfg = get_config()
+        if not arg:
+            console.print(f"Current model: [bold]{cfg.model_name}[/bold]")
+        else:
+            cfg.raw()["model"]["name"] = arg
+            session.llm = get_chat_model(tools=session.tools)
+            console.print(f"[green]Switched model to [bold]{arg}[/bold] for this session.[/green]")
+    elif name == "memory":
+        from memory.project import ProjectMemory
+
+        rendered = ProjectMemory(workspace).render()
+        console.print(
+            Panel(
+                rendered or "[dim]Nothing remembered yet.[/dim]",
+                title="[magenta]Project memory[/magenta]",
+                border_style="magenta",
+            )
+        )
+    elif name == "clear":
+        session.reset()
+        console.print("[dim]Conversation cleared (saved project memory kept).[/dim]")
+    else:
+        console.print(f"[yellow]Unknown command: /{name}. Try /help.[/yellow]")
+
+
 def run_agent_repl(workspace: Path) -> None:
     """Interactive agent loop over the given workspace."""
     from core.config import get_config
@@ -242,7 +298,7 @@ def run_agent_repl(workspace: Path) -> None:
             f"[dim]Model:[/dim]     {model_name}\n"
             f"[dim]Tools:[/dim]     {', '.join(session.tools_by_name)}\n\n"
             f"[dim]Describe a task in plain English, or 'plan <goal>' for a multi-step build.\n"
-            f"Type 'exit' to quit.[/dim]",
+            f"'/help' for commands · 'exit' to quit.[/dim]",
             border_style="magenta",
         )
     )
@@ -267,6 +323,9 @@ def run_agent_repl(workspace: Path) -> None:
             break
 
         try:
+            if user.startswith("/"):
+                _handle_command(user, session, workspace)
+                continue
             if low == "resume":
                 planner.run()
                 continue
@@ -287,3 +346,6 @@ def run_agent_repl(workspace: Path) -> None:
             session.send(user)
         except KeyboardInterrupt:
             console.print("\n[yellow]Interrupted — back to the prompt.[/yellow]")
+        except Exception as e:  # noqa: BLE001 — keep the REPL alive on any failure
+            console.print(f"\n[red]⚠ Error: {e}[/red]")
+            console.print("[dim]If the model is unreachable, check that Ollama is running.[/dim]")
