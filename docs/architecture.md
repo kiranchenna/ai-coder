@@ -1,122 +1,115 @@
 # AICoder — Architecture
 
-**Version:** 2.0.0 | **Language:** Python 3.10+ | **Entry point:** `cli.py` → `aicoder` CLI command
+**Version:** 3.0.0 | **Language:** Python 3.10+ | **Entry point:** `cli.py` → `aicoder` CLI command
 
-AICoder is a local AI-powered coding assistant CLI. It uses Ollama (local LLM, no cloud, no API keys) to guide users through a 7-phase project planning and code generation pipeline, plus a 24-command REPL for day-to-day coding work.
+AICoder v3 is a local, offline **agentic** coding assistant. It uses Ollama
+(local LLM, no cloud, no API keys) to drive a single tool-calling loop that
+works on your real repository: reading and editing code, running commands and
+tests, researching the web, and remembering decisions across sessions.
 
 ---
 
-## Directory Structure
+## Directory structure
 
 ```
 ai-coder/
-├── cli.py                      # Main entry point
-├── main.py                     # Legacy 4-phase wizard (original prototype)
-├── aicoder_cli/__init__.py     # Installable package wrapper, sets up sys.path
+├── cli.py                      # Entry point (args, config, launch the agent)
+├── aicoder_cli/__init__.py     # Installable package wrapper (sets up sys.path)
 │
-├── core/                       # Core application logic (8 modules)
+├── core/                       # Shared core
 │   ├── config.py               # Configuration (~/.aicoder/config.yaml)
-│   ├── context.py              # Workspace scanner & AI context builder
-│   ├── knowledge.py            # Vector RAG (ChromaDB + Ollama embeddings)
-│   ├── memory.py               # Persistent conversation memory + auto-summarization
-│   ├── pipeline.py             # 7-phase pipeline orchestrator
-│   ├── repl.py                 # Main interactive REPL loop
-│   ├── roles.py                # 18 AI persona system prompts
-│   └── streaming.py            # Streaming LLM output, <think> tag handling
+│   ├── context.py              # Workspace scanner / repo overview
+│   ├── model.py                # ChatOllama factory + tool-call recovery + selftest
+│   └── project.py              # Test-command detection
 │
-├── phases/                     # 7-phase planning pipeline
-│   ├── base.py                 # Abstract BasePhase
-│   ├── idea.py                 # Phase 1: Idea Refinement (Product Manager)
-│   ├── competitors.py          # Phase 2: Competitor Analysis (Market Analyst)
-│   ├── architecture.py         # Phase 3: Architecture Design (Software Architect)
-│   ├── models.py               # Phase 4: Data Models (Database Architect)
-│   ├── api_design.py           # Phase 5: API Design (Backend Engineer)
-│   ├── frontend.py             # Phase 6: Frontend Planning (Frontend Engineer)
-│   └── codegen.py              # Phase 7: Code Generation (auto-selected Developer)
+├── agent/                      # The agentic core
+│   ├── loop.py                 # Tool-calling loop, REPL, slash commands
+│   ├── tools.py                # The 14 agent tools
+│   ├── planner.py              # Decompose + run resumable task plans
+│   └── prompts.py              # System prompt
 │
-├── tools/                      # External integrations
-│   ├── file_tools.py           # File read/write/diff/backup, path safety
+├── rag/                        # Retrieval-augmented knowledge
+│   ├── store.py                # ChromaDB vector store with chunking + TTL
+│   └── ingest.py               # PDF/docx/md/html document loaders
+│
+├── memory/                     # Persistent per-project memory
+│   └── project.py              # Durable facts (decisions/conventions/TODOs)
+│
+├── tools/                      # Helpers
+│   ├── file_tools.py           # File read/write/diff/backup, path safety, grep
 │   ├── shell_tools.py          # Shell execution with 3 confirmation modes
-│   ├── web_tools.py            # DuckDuckGo search + URL fetch + HTML parsing
-│   └── tech_tools.py           # Package version lookup (PyPI/npm/GitHub)
+│   └── web_tools.py            # DuckDuckGo search + URL fetch + HTML parsing
 │
-├── commands/                   # Slash command system
-│   ├── registry.py             # Command registration & dispatch
-│   └── handlers.py             # 24 command implementations
-│
-├── tests/                      # pytest unit tests (43 tests)
-│   ├── test_config.py
-│   ├── test_file_tools.py
-│   └── test_tech_tools.py
-│
-├── specs/                      # Pipeline output specs (user-generated, gitignored)
-├── process/                    # Phase state per project (gitignored)
-└── output/                     # Generated code output (gitignored)
+└── tests/                      # pytest unit tests
+    ├── test_agent.py           # Agent logic (parsers, chunking, detection, memory)
+    ├── test_config.py
+    └── test_file_tools.py
 ```
 
+Runtime data lives under `~/.aicoder/` (config, RAG store, per-project memory),
+not in the repo.
+
 ---
 
-## Tech Stack
+## Tech stack
 
-| Category | Library | Version |
+| Category | Library | Floor |
 |---|---|---|
-| LLM | langchain-ollama | 0.2.0+ |
-| LLM Core | langchain-core | 0.3.0+ |
-| Terminal UI | rich | 13.0.0+ |
-| Web Search | ddgs (DuckDuckGo) | 9.0.0+ |
-| HTTP | httpx | 0.27.0+ |
-| HTML parsing | beautifulsoup4 | 4.12.0+ |
+| LLM | langchain-ollama | 1.0+ |
+| LLM core | langchain-core | 1.0+ |
+| Terminal UI | rich | 13.0+ |
+| Web search | ddgs (DuckDuckGo) | 9.0+ |
+| HTTP | httpx | 0.28+ |
+| HTML parsing | beautifulsoup4 | 4.12+ |
 | Config | pyyaml | 6.0+ |
-| Vector DB | chromadb | 0.5.0+ |
-| Version parsing | packaging | 24.0+ |
-| File patterns | pathspec | 0.12.0+ |
+| Vector DB | chromadb | 1.0+ |
+| PDF parsing | pypdf | 4.0+ |
+| Word parsing | python-docx | 1.1+ |
+| File patterns | pathspec | 0.12+ |
 | Testing | pytest | 8.0+ |
-| External req | Ollama (local LLM server) | — |
+| External | Ollama (local LLM server) | — |
 
 ---
 
-## Data Flow
+## Data flow
 
 ```
 cli.py
-  └── run_repl() [core/repl.py]
-        ├── /command  →  commands/registry.py  →  commands/handlers.py
-        └── natural language  →  core/streaming.py  →  Ollama LLM
-
-/project "idea"
-  └── core/pipeline.py
-        ├── Phase 1-6: web research (cached ChromaDB) + AI discussion + write to process/<project>/
-        └── Phase 7: codegen file-by-file → workspace, tracked in codegen_state.json
+  └── run_agent_repl() [agent/loop.py]
+        ├── "plan <goal>"  →  agent/planner.py  →  task list → AgentSession per task
+        ├── "/command"     →  _handle_command (model/tools/memory/clear)
+        └── plain English  →  AgentSession.send():
+                                 model.invoke(history + tools)
+                                   ├── native tool_calls → execute → feed back
+                                   ├── else text tool-calls → recover → execute → feed back
+                                   └── else → final answer
 ```
+
+Tools touch the workspace (read/write code, run shell/tests) and `~/.aicoder/`
+(RAG store, project memory, plan state).
 
 ---
 
 ## Configuration
 
 - File: `~/.aicoder/config.yaml` (auto-created on first run)
-- Default model: `qwen3.5:2b` via Ollama at `http://localhost:11434`
+- Default model: `qwen2.5-coder:7b` via Ollama at `http://localhost:11434`
 
 ```yaml
 model:
   provider: ollama
-  name: qwen3.5:2b
+  name: qwen2.5-coder:7b
   base_url: http://localhost:11434
   temperature: 0.3
   temperature_precise: 0.1
   context_length: 16384
 
 shell:
-  confirmation: always       # always | never | smart
+  confirmation: always       # always | smart | never
 
 files:
-  confirmation: auto         # auto | always | never
+  confirmation: auto         # always | auto | never
   backup: true
-
-workspace:
-  auto_scan: true
-  ignore_dirs: [.git, venv, node_modules, ...]
-  max_file_size_kb: 200
-  max_context_files: 30
 
 knowledge:
   embedding_model: "nomic-embed-text-v2-moe"
@@ -124,93 +117,73 @@ knowledge:
 
 ---
 
-## Key Architectural Decisions
+## Key architectural decisions
 
-1. **Local-only** — No cloud, no API keys. All user data stored in `~/.aicoder/`.
-2. **Role-based AI personas** — Each pipeline phase switches to a tailored system prompt (`core/roles.py`).
-3. **Vector RAG** — ChromaDB + Ollama embeddings for semantic search over cached web results. Reuses research across phases.
-4. **Resumable pipeline** — State saved after each phase in `process/<project>/state.json`. Users can exit and resume.
-5. **File-by-file codegen** — Phase 7 writes one file at a time, progress tracked in `codegen_state.json`.
-6. **Workspace context injection** — `core/context.py` auto-scans project and injects a summary into every LLM prompt.
-7. **Auto-summarization** — Memory auto-compresses older messages when history exceeds 20K chars.
-8. **Path safety** — All file ops resolved against workspace root; escape checks prevent directory traversal.
-
----
-
-## LLM Integration Pattern
-
-Uses LangChain message types: `HumanMessage`, `AIMessage`, `SystemMessage`.
-
-Two lazy-loaded `ChatOllama` instances per session:
-- `temperature=0.3` — conversational default
-- `temperature=0.1` — precise mode for specs and code
-
-`<think>` tags in model output are intercepted and hidden from the terminal display.
+1. **Single agentic loop** — one assistant that plans, edits, runs, and verifies,
+   working on any repo. Replaces the old fixed 7-phase pipeline.
+2. **Native tool calling, with text recovery** — tools are bound for native tool
+   calling; when a local model emits calls as JSON text instead, they are parsed
+   from the content and executed (`core/model.py`).
+3. **RAG + memory, not weight training** — staying current and "learning" is done
+   by retrieving cached web/document knowledge and durable project facts at query
+   time; the model's weights are never modified.
+4. **You-in-the-loop** — file writes and shell commands are gated by configurable
+   confirmation modes; overwritten files are backed up.
+5. **Sandboxed file ops** — all paths resolved against the workspace root;
+   traversal is rejected.
+6. **Resumable plans** — `plan <goal>` saves task state after each step so a build
+   resumes after a quit.
+7. **Strictly local** — no cloud, no API keys; all data under `~/.aicoder/`.
 
 ---
 
-## Data Formats
+## LLM integration
 
-**Pipeline state** (`process/<project>/state.json`):
+Uses LangChain message types (`HumanMessage`, `AIMessage`, `SystemMessage`,
+`ToolMessage`). `core/model.get_chat_model()` builds a `ChatOllama` (conversational
+`temperature=0.3`, precise `0.1`) and binds the agent's tools. `core/model.selftest()`
+checks tool calling (native or text-recovered) for the configured model.
+
+---
+
+## Data formats
+
+**Project memory** (`~/.aicoder/memory/<project_id>/project_memory.json`):
 ```json
-{
-  "project_name": "my-app",
-  "idea": "...",
-  "current_phase": 3,
-  "phases": {
-    "1": {"status": "done", "name": "Idea Refinement"},
-    "3": {"status": "in_progress", "name": "Architecture Design"}
-  }
-}
+[
+  {"id": "ab12cd34", "text": "Auth uses argon2", "category": "decision",
+   "created_at": "2026-06-02T11:00:00"}
+]
 ```
 
-**Codegen state** (`process/<project>/codegen_state.json`):
+**Task plan** (`~/.aicoder/memory/<project_id>/plan.json`):
 ```json
 {
-  "generated_files": ["src/main.py", "src/models.py"],
-  "total_files": 12,
-  "complete": false
-}
-```
-
-**Session memory** (`~/.aicoder/memory/<project_id>/session.json`):
-```json
-{
-  "project_path": "/path/to/project",
-  "saved_at": "2025-04-11T...",
-  "history": [
-    {"role": "human", "content": "..."},
-    {"role": "ai", "content": "..."}
+  "goal": "build a todo API",
+  "tasks": [
+    {"id": 1, "title": "Create the model", "description": "...", "status": "done"},
+    {"id": 2, "title": "Add endpoints", "description": "...", "status": "pending"}
   ]
 }
 ```
 
-**File block format** (used by codegen parser):
-```
-===FILE: path/to/file.ext===
-<complete file content>
-===END===
-
-===SUMMARY===
-What changed: description
-===END===
-```
+**RAG store** — ChromaDB collection `aicoder_rag` at `~/.aicoder/rag/chroma/`;
+documents are chunked, embedded, and tagged with `source`, `title`, `fetched_at`,
+and `ttl_hours`.
 
 ---
 
 ## Installation
 
 ```bash
-# Dev install (editable)
-python -m venv venv
-source venv/bin/activate   # Windows: venv\Scripts\activate
+python3 -m venv .venv
+source .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -e .
-aicoder
 
-# Standalone binary (no Python needed for end users)
-pip install pyinstaller
-pyinstaller --name aicoder --onefile cli.py
-# dist/aicoder  (or dist/aicoder.exe on Windows)
+aicoder --selftest            # check tool calling
+aicoder                       # start the agent
+
+# models
+ollama pull qwen2.5-coder:7b
+ollama pull nomic-embed-text-v2-moe
 ```
-
-Requires Ollama running locally: `ollama pull qwen3.5:2b`
