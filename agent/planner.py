@@ -99,7 +99,9 @@ class Planner:
         try:
             from rag.store import KnowledgeBase
 
-            hits = KnowledgeBase.get().search(goal, n=4, max_distance=0.8)
+            hits = KnowledgeBase.get().search(
+                goal, n=4, max_distance=0.8, project=project_id(self.workspace)
+            )
             if hits:
                 return "\n\n".join(h["content"] for h in hits)[:3000]
         except Exception:

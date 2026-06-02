@@ -168,8 +168,10 @@ checks tool calling (native or text-recovered) for the configured model.
 ```
 
 **RAG store** — ChromaDB collection `aicoder_rag` at `~/.aicoder/rag/chroma/`;
-documents are chunked, embedded, and tagged with `source`, `title`, `fetched_at`,
-and `ttl_hours`.
+content is chunked, embedded, and tagged with `source`, `title`, `fetched_at`,
+`ttl_hours`, and `project`. Web research is stored globally (`project=""`) and
+shared across projects; ingested documents are tagged with the project id, and
+search returns global entries + the current project's own.
 
 ---
 

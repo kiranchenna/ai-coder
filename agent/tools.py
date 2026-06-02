@@ -80,6 +80,9 @@ def _apply_write(workspace: Path, path: str, new_content: str, existing: str | N
 
 def build_tools(workspace: Path) -> list:
     """Return the list of LangChain tools bound to this workspace."""
+    from core.config import project_id
+
+    proj = project_id(workspace)  # scope per-project documents; web stays global
 
     @tool
     def list_files(path: str = ".") -> str:
@@ -229,7 +232,8 @@ def build_tools(workspace: Path) -> list:
 
         kb = KnowledgeBase.get()
         try:
-            cached = kb.search(query, n=4)
+            # this project's docs + global web cache
+            cached = kb.search(query, n=4, project=proj)
         except Exception:
             cached = []
         if cached:
@@ -354,7 +358,8 @@ def build_tools(workspace: Path) -> list:
 
         try:
             chunks = KnowledgeBase.get().add(
-                text, source=f"document:{path}", title=path, ttl_hours=24 * 365
+                text, source=f"document:{path}", title=path,
+                ttl_hours=24 * 365, project=proj,
             )
         except Exception as e:
             # Don't claim success: ingestion failed (e.g. Ollama/embedding model
@@ -379,8 +384,9 @@ def build_tools(workspace: Path) -> list:
         from rag.store import KnowledgeBase
 
         try:
-            # Looser cutoff for recall than for the research cache-hit decision.
-            results = KnowledgeBase.get().search(query, n=5, max_distance=0.65)
+            # Looser cutoff for recall than for the research cache-hit decision;
+            # scoped to this project's docs + global web cache.
+            results = KnowledgeBase.get().search(query, n=5, max_distance=0.65, project=proj)
         except Exception as e:
             return f"ERROR: knowledge base unavailable: {e}"
         if not results:

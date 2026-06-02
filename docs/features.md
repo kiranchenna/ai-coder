@@ -121,6 +121,10 @@ Per user turn (`AgentSession.send`):
   nothing instead of the nearest irrelevant chunk.
 - **Document loaders:** PDF (pypdf), Word (python-docx, incl. tables),
   Markdown/txt/rst, HTML.
+- **Scoping:** web research is **global** (shared cache across projects);
+  ingested documents are **per-project** (tagged by workspace, so a PRD from one
+  project doesn't surface in another). Recall returns this project's docs + the
+  global web cache.
 
 ### Test detection (`core/project.py`)
 - Auto-detects the test command from marker files: pytest, npm/yarn/pnpm test,

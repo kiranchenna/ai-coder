@@ -134,7 +134,13 @@ class KnowledgeBase:
 
     # ── Read ───────────────────────────────────────────────────────────────────
 
-    def search(self, query: str, n: int = 5, max_distance: float = 0.5) -> list[dict]:
+    def search(
+        self,
+        query: str,
+        n: int = 5,
+        max_distance: float = 0.5,
+        project: str = "",
+    ) -> list[dict]:
         """
         Semantic search. Returns up to n live (non-expired) results as
         {content, metadata, distance}, filtered by relevance.
@@ -142,8 +148,13 @@ class KnowledgeBase:
         ``max_distance`` is the cosine-distance cutoff (0 = identical, 2 =
         opposite). Results above it are dropped, so an unrelated query against a
         sparse store returns nothing instead of the nearest irrelevant chunk.
+
+        ``project`` scopes the search to global entries (project="") plus that
+        project's own entries — so project-specific documents don't leak across
+        projects while shared web research stays global. Empty = no scoping.
         """
         self._init()
+        where = {"project": {"$in": ["", project]}} if project else None
         try:
             count = self._collection.count()
             if count == 0:
@@ -151,6 +162,7 @@ class KnowledgeBase:
             results = self._collection.query(
                 query_texts=[query],
                 n_results=min(n * 3, count),
+                where=where,
             )
         except Exception:
             return []
