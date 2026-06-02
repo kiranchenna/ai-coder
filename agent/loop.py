@@ -175,25 +175,25 @@ class AgentSession:
 
         The preview is erased when the stream ends (transient=True), so tool-call
         JSON doesn't linger; final answers are re-rendered as Markdown by send().
-        Returns the accumulated message (with any tool_calls).
+        Returns a clean AIMessage (coerced from the streamed chunk) with any
+        tool_calls. Raises on a model/stream failure so callers (the REPL handler,
+        the planner) can react rather than mistaking it for an empty answer.
         """
         accumulated = None
         shown = ""
-        try:
-            with Live(console=console, refresh_per_second=10, transient=True) as live:
-                live.update(Text("💭 Thinking…", style="dim italic"))
-                for chunk in self.llm.stream(self.messages):
-                    accumulated = chunk if accumulated is None else accumulated + chunk
-                    piece = chunk.content or ""
-                    if piece:
-                        shown += piece
-                        live.update(Text(shown))
-        except Exception as e:  # noqa: BLE001 — surface model/Ollama failures gracefully
-            console.print(f"\n[red]⚠ LLM error: {e}[/red]")
-            console.print("[dim]Is Ollama running? Try: ollama serve[/dim]")
-            return AIMessage(content="")
+        with Live(console=console, refresh_per_second=10, transient=True) as live:
+            live.update(Text("💭 Thinking…", style="dim italic"))
+            for chunk in self.llm.stream(self.messages):
+                accumulated = chunk if accumulated is None else accumulated + chunk
+                piece = chunk.content
+                if isinstance(piece, str) and piece:
+                    shown += piece
+                    live.update(Text(shown))
 
-        return accumulated if accumulated is not None else AIMessage(content="")
+        if accumulated is None:
+            raise RuntimeError("the model returned an empty response stream")
+        # Coerce the streamed AIMessageChunk into a plain AIMessage for history.
+        return AIMessage(content=accumulated.content, tool_calls=accumulated.tool_calls or [])
 
     def _render_call(self, call: dict) -> None:
         name = call.get("name", "?")
@@ -224,44 +224,30 @@ class AgentSession:
 
 # ── REPL ───────────────────────────────────────────────────────────────────────
 
-def _knowledge_learn(topic: str, kb) -> None:
+def _knowledge_learn(topic: str) -> None:
     """Proactively research a topic (or fetch a URL) and cache it globally."""
-    from tools.web_tools import fetch_url, format_search_results, search_web
+    from rag.research import cache_url, research_topic
+    from tools.web_tools import is_fetch_error
 
     # Direct URL → fetch and cache that page.
-    if topic.startswith("http://") or topic.startswith("https://"):
-        page = fetch_url(topic)
-        if page.startswith("[Error") or page.startswith("[Non-text"):
+    if topic.lower().startswith(("http://", "https://")):
+        n, page = cache_url(topic, project="")
+        if is_fetch_error(page):
             console.print(f"[yellow]{page}[/yellow]")
-            return
-        n = kb.add(page, source=topic, title=topic, ttl_hours=48, project="")
-        console.print(f"[green]Learned {n} chunk(s) from {topic}.[/green]")
+        else:
+            console.print(f"[green]Learned {n} chunk(s) from {topic}.[/green]")
         return
 
-    # Topic → web search, then fetch the top couple of pages for depth.
+    # Topic → web search + fetch the top pages for depth.
     console.print(f"[dim]🌐 Researching: {topic}…[/dim]")
-    results = search_web(topic)
-    if not results:
+    result = research_topic(topic, project="")
+    if result["count"] == 0:
         console.print(f"[yellow]No web results for '{topic}'.[/yellow]")
         return
 
-    total = kb.add(format_search_results(results), source="web-search", title=topic,
-                   ttl_hours=12, project="")
-    sources = ["web-search results"]
-    for r in results[:2]:
-        url = r.get("href") or r.get("url", "")
-        if not url:
-            continue
-        page = fetch_url(url)
-        if page and not page.startswith("[Error") and not page.startswith("[Non-text") \
-                and len(page) > 200:
-            total += kb.add(page, source=url, title=r.get("title", topic),
-                            ttl_hours=48, project="")
-            sources.append(url)
-
-    console.print(f"[green]Learned '{topic}' — cached {total} chunk(s) from "
-                  f"{len(sources)} source(s).[/green]")
-    for s in sources:
+    console.print(f"[green]Learned '{topic}' — cached {result['count']} chunk(s) from "
+                  f"{len(result['sources'])} source(s).[/green]")
+    for s in result["sources"]:
         console.print(f"  [dim]• {s}[/dim]")
 
 
@@ -316,17 +302,16 @@ def _handle_command(raw: str, session: "AgentSession", workspace: Path) -> None:
         from rag.store import KnowledgeBase
 
         kb = KnowledgeBase.get()
-        sub = arg.split()
-        action = sub[0].lower() if sub else ""
+        action, _, rest = arg.partition(" ")
+        action = action.lower()
+        rest = rest.strip()
         try:
             if action == "learn":
-                parts = arg.split(maxsplit=1)
-                topic = parts[1].strip() if len(parts) > 1 else ""
-                if not topic:
+                if not rest:
                     console.print("[yellow]Usage: /knowledge learn <topic or URL>[/yellow]")
                 else:
-                    _knowledge_learn(topic, kb)
-            elif action == "clear" and len(sub) > 1 and sub[1].lower() == "all":
+                    _knowledge_learn(rest)
+            elif action == "clear" and rest.lower() == "all":
                 n = kb.clear_all()
                 console.print(f"[green]Cleared the entire knowledge base ({n} chunk(s)).[/green]")
             elif action == "clear":

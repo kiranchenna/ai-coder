@@ -80,6 +80,15 @@ def test_balanced_json_arrays_string_aware():
     assert arrays == ['["a", "b]c"]', "[1, 2]"]
 
 
+# ─── fetch-error predicate ────────────────────────────────────────────────────
+
+def test_is_fetch_error():
+    from tools.web_tools import is_fetch_error
+    assert is_fetch_error("[Error fetching https://x: timeout]") is True
+    assert is_fetch_error("[Non-text content (image/png) at ...]") is True
+    assert is_fetch_error("# Real Page\n\nActual content here.") is False
+
+
 # ─── RAG chunking ─────────────────────────────────────────────────────────────
 
 def test_chunk_text_overlapping():

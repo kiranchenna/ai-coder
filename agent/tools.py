@@ -227,55 +227,33 @@ def build_tools(workspace: Path) -> list:
         findings, and returns them WITH their source URLs. Use this whenever you are unsure
         about current/external facts instead of guessing."""
         from rag.store import KnowledgeBase
-        from tools.web_tools import search_web, format_search_results
-        from tools.web_tools import fetch_url as _fetch
+        from rag.research import research_topic
 
-        kb = KnowledgeBase.get()
         try:
             # this project's docs + global web cache
-            cached = kb.search(query, n=4, project=proj)
+            cached = KnowledgeBase.get().search(query, n=4, project=proj)
         except Exception:
             cached = []
         if cached:
             return f"(from cached knowledge)\n\n{_format_hits(cached)}"
 
-        results = search_web(query)
-        if not results:
+        # Cache miss → research and cache globally (web knowledge is shared).
+        result = research_topic(query, project="")
+        if result["count"] == 0:
             return f"No web results found for '{query}'."
-        summary = format_search_results(results)
-        try:
-            kb.add(summary, source="web-search", title=query, ttl_hours=12)
-        except Exception:
-            pass
-
-        extra = ""
-        url = results[0].get("href") or results[0].get("url", "")
-        if url:
-            page = _fetch(url)
-            if page and not page.startswith("[Error") and not page.startswith("[Non-text") \
-                    and len(page) > 200:
-                try:
-                    kb.add(page, source=url, title=results[0].get("title", query), ttl_hours=48)
-                except Exception:
-                    pass
-                extra = f"\n\n---\n\n**Source: {url}**\n\n{page[:2500]}"
-        return f"{summary}{extra}"
+        return result["text"]
 
     @tool
     def fetch_url(url: str) -> str:
         """Fetch a specific web page (e.g. an official docs page), extract its readable text,
         cache it in the knowledge base, and return the content. Use when you already have a
         specific URL to read."""
-        from rag.store import KnowledgeBase
-        from tools.web_tools import fetch_url as _fetch
+        from rag.research import cache_url
+        from tools.web_tools import is_fetch_error
 
-        page = _fetch(url)
-        if page.startswith("[Error") or page.startswith("[Non-text"):
+        n, page = cache_url(url, project="")
+        if is_fetch_error(page):
             return page
-        try:
-            KnowledgeBase.get().add(page, source=url, title=url, ttl_hours=48)
-        except Exception:
-            pass
         if len(page) > MAX_READ_CHARS:
             page = page[:MAX_READ_CHARS] + "\n[... truncated ...]"
         return page

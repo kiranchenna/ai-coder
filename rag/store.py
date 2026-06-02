@@ -189,7 +189,8 @@ class KnowledgeBase:
         if not project:
             return self._collection.count()
         try:
-            return len(self._collection.get(where={"project": project}).get("ids", []))
+            # include=[] → ids only, no document/embedding payloads loaded.
+            return len(self._collection.get(where={"project": project}, include=[]).get("ids", []))
         except Exception:
             return 0
 
@@ -203,7 +204,7 @@ class KnowledgeBase:
         """Delete this project's own entries (keeps global web cache). Returns count removed."""
         self._init()
         try:
-            n = len(self._collection.get(where={"project": project}).get("ids", []))
+            n = len(self._collection.get(where={"project": project}, include=[]).get("ids", []))
             if n:
                 self._collection.delete(where={"project": project})
             return n
@@ -216,9 +217,11 @@ class KnowledgeBase:
         try:
             n = self._collection.count()
             self._client.delete_collection(COLLECTION)
+            return n
         except Exception:
             return 0
-        # Force re-init so the collection is recreated empty on next use.
-        self._client = None
-        self._collection = None
-        return n
+        finally:
+            # Always force re-init so the next call recreates the collection,
+            # even if delete_collection failed partway (avoids a stale handle).
+            self._client = None
+            self._collection = None

@@ -69,6 +69,11 @@ def format_search_results(results: list[dict]) -> str:
 
 # ─── Fetch URL ────────────────────────────────────────────────────────────────
 
+def is_fetch_error(page: str) -> bool:
+    """True if a fetch_url result is an error/non-text sentinel rather than content."""
+    return page.startswith("[Error") or page.startswith("[Non-text")
+
+
 def fetch_url(url: str, timeout: int | None = None) -> str:
     """
     Fetch a URL and return its content as clean plain text (markdown-ish).
