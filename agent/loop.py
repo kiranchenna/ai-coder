@@ -58,6 +58,16 @@ def _repo_overview(workspace: Path) -> str:
         return ""
 
 
+def _project_memory(workspace: Path) -> str:
+    """Durable project memory saved in earlier sessions (best-effort)."""
+    try:
+        from memory.project import ProjectMemory
+
+        return ProjectMemory(workspace).render()
+    except Exception:
+        return ""
+
+
 class AgentSession:
     """Holds conversation state and drives the tool-calling loop."""
 
@@ -69,7 +79,10 @@ class AgentSession:
         self.messages = [
             SystemMessage(
                 content=system_prompt(
-                    workspace, list(self.tools_by_name), _repo_overview(workspace)
+                    workspace,
+                    list(self.tools_by_name),
+                    _repo_overview(workspace),
+                    _project_memory(workspace),
                 )
             )
         ]

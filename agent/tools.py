@@ -274,6 +274,30 @@ def build_tools(workspace: Path) -> list:
         return page
 
     @tool
+    def remember(note: str, category: str = "note") -> str:
+        """Save a durable fact about THIS project to long-term memory so you and future
+        sessions recall it later — an architectural decision, a convention to follow, an
+        important fact, or a TODO. `category` is a short tag like 'decision', 'convention',
+        'fact', or 'todo'. Use this whenever something is worth remembering across sessions."""
+        from memory.project import ProjectMemory
+
+        entry = ProjectMemory(workspace).add(note, category)
+        return f"Remembered [{entry['category']}]: {entry['text']}"
+
+    @tool
+    def recall(query: str = "") -> str:
+        """Recall durable facts you've saved about this project. With no query, returns all
+        saved project memory; with a query, returns matching entries. Use this at the start of
+        a task to remember prior decisions and conventions."""
+        from memory.project import ProjectMemory
+
+        pm = ProjectMemory(workspace)
+        items = pm.search(query) if query else pm.all()
+        if not items:
+            return "No project memory has been saved yet."
+        return "\n".join(f"[{it['category']}] {it['text']}" for it in items)
+
+    @tool
     def run_tests() -> str:
         """Run the project's test suite to verify your changes actually work. Auto-detects the
         test command (pytest, npm test, cargo test, go test, make test, etc.). Returns whether
@@ -361,4 +385,5 @@ def build_tools(workspace: Path) -> list:
         list_files, find_files, search_code, read_file,
         write_file, edit_file, run_shell,
         research, fetch_url, rag_search, read_document, run_tests,
+        remember, recall,
     ]
