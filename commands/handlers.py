@@ -57,30 +57,6 @@ def handle_help(args: str, ctx: REPLContext) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# /build
-# ─────────────────────────────────────────────────────────────────────────────
-
-def handle_build(args: str, ctx: REPLContext) -> None:
-    """Launch the original 4-phase wizard."""
-    import importlib.util, sys
-    from pathlib import Path as _Path
-
-    # Find and import main.py from the ai-coder package directory
-    pkg_root = _Path(__file__).parent.parent
-    main_path = pkg_root / "main.py"
-
-    if not main_path.exists():
-        console.print("[red]Could not find main.py wizard.[/red]")
-        return
-
-    console.print(Rule("[bold magenta]Launching Wizard Mode[/bold magenta]"))
-    spec = importlib.util.spec_from_file_location("main_wizard", main_path)
-    mod  = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
-    mod.main()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # /fix
 # ─────────────────────────────────────────────────────────────────────────────
 

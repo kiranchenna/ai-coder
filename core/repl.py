@@ -238,7 +238,7 @@ def _register_all_commands() -> None:
     """Register all slash commands with the global registry."""
     from commands.registry import registry
     from commands.handlers import (
-        handle_help, handle_build, handle_fix, handle_improve,
+        handle_help, handle_fix, handle_improve,
         handle_research, handle_versions, handle_stack,
         handle_explain, handle_review, handle_run,
         handle_context, handle_memory, handle_shell_mode,
@@ -255,8 +255,7 @@ def _register_all_commands() -> None:
 
     reg("help",       "Show all commands",                               "/help",                          handle_help,      ["h", "?"])
     reg("project",    "Launch the 7-phase project planning pipeline",     "/project \"idea\" | resume | list", handle_project,  ["plan", "pipeline"])
-    reg("build",      "Launch the 4-phase app builder wizard",           "/build",                         handle_build,     ["wizard"])
-    reg("new",        "Create and scaffold a new project",               "/new <name> [description]",      handle_new)
+    reg("new",      "Create and scaffold a new project",               "/new <name> [description]",      handle_new)
     reg("fix",        "Fix bugs in a file or workspace",                 "/fix [file] [description]",      handle_fix)
     reg("improve",    "Improve code quality and structure",              "/improve [file] [what]",         handle_improve,   ["refactor"])
     reg("research",   "Web-search a topic and get AI summary",           "/research <topic>",              handle_research,  ["r"])

@@ -180,7 +180,6 @@ Type `/help` inside the REPL or use any of these:
 ### 🏗 Project Scaffolding
 | Command | Description |
 |---|---|
-| `/build` | Launch the original 4-phase app builder wizard |
 | `/new <name> [desc]` | Quick-scaffold a new project directory |
 | `/test [analyse\|cmd]` | Run tests; `analyse` asks AI to explain failures |
 
@@ -329,7 +328,6 @@ memory:
 ```
 ai-coder/
 ├── cli.py                      # Entry point (aicoder command)
-├── main.py                     # Original 4-phase wizard
 ├── aicoder_cli/                # Installable package wrapper
 ├── core/
 │   ├── config.py               # Config management (~/.aicoder/config.yaml)

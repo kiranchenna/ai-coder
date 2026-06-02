@@ -13,9 +13,9 @@ from typing import Callable, Any
 @dataclass
 class Command:
     """A registered slash command."""
-    name: str                  # e.g. "build"
+    name: str                  # e.g. "project"
     description: str           # Short description shown in /help
-    usage: str                 # e.g. "/build <idea>"
+    usage: str                 # e.g. "/project <idea>"
     handler: Callable[..., Any]
     aliases: list[str] = field(default_factory=list)
 
@@ -58,8 +58,6 @@ class CommandRegistry:
         def sort_key(c: Command):
             if c.name == "project":
                 return "000_project"
-            if c.name == "build":
-                return "001_build"
             return c.name
 
         return sorted(result, key=sort_key)

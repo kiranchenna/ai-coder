@@ -30,7 +30,7 @@ Examples:
 
 Slash commands while running:
   /help          See all commands
-  /build         Launch the app builder wizard
+  /project X     Launch the 7-phase project planning pipeline
   /fix [file]    Fix bugs in a file
   /research X    Web-search a topic
   /versions X    Get latest version of a package
