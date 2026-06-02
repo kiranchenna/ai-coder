@@ -317,6 +317,29 @@ def build_tools(workspace: Path) -> list:
         return page
 
     @tool
+    def run_checks() -> str:
+        """Run the project's linters and type checkers (e.g. ruff, mypy, eslint, tsc, clippy,
+        go vet) to catch style and type errors. Auto-detected and read-only. Use this
+        alongside run_tests after editing code."""
+        from core.project import detect_lint_commands
+        from tools.shell_tools import run_command
+
+        checks = detect_lint_commands(workspace)
+        if not checks:
+            return "No linters or type checkers are configured for this project."
+
+        parts = []
+        for command, label in checks:
+            stdout, stderr, code = run_command(command, cwd=workspace, timeout=180,
+                                               stream_output=False)
+            body = ((stdout or "") + ("\n" + stderr if stderr else "")).strip()
+            if len(body) > MAX_SHELL_OUTPUT:
+                body = "[... truncated ...]\n" + body[-MAX_SHELL_OUTPUT:]
+            status = "OK" if code == 0 else "ISSUES"
+            parts.append(f"[{label}] {status} (exit {code})" + (f"\n{body}" if body else ""))
+        return "\n\n".join(parts)
+
+    @tool
     def git_status() -> str:
         """Show the project's git status (changed and untracked files). Read-only."""
         from tools.shell_tools import run_command
@@ -477,7 +500,7 @@ def build_tools(workspace: Path) -> list:
     return [
         list_files, find_files, search_code, read_file,
         write_file, edit_file, run_shell,
-        research, fetch_url, rag_search, read_document, run_tests,
+        research, fetch_url, rag_search, read_document, run_tests, run_checks,
         git_status, git_diff, git_commit,
         remember, recall,
     ]

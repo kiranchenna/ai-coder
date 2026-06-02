@@ -27,6 +27,7 @@ paths are sandboxed to the workspace.
 | `edit_file(path, old_string, new_string)` | Replace an exact, unique snippet (diff + confirm) |
 | `run_shell(command)` | Run a shell command (confirmation per config) |
 | `run_tests()` | Auto-detect and run the test suite, report pass/fail |
+| `run_checks()` | Auto-detect and run linters / type checkers (ruff, mypy, eslint, tsc, clippy, go vet) |
 | `git_status()` / `git_diff(path)` | Review changes (read-only) |
 | `git_commit(message)` | Stage (excluding `.bak`) and commit (confirmation per config) |
 
@@ -142,9 +143,11 @@ keeps long sessions and large `plan` builds within the context window.
   project doesn't surface in another). Recall returns this project's docs + the
   global web cache.
 
-### Test detection (`core/project.py`)
+### Test & check detection (`core/project.py`)
 - Auto-detects the test command from marker files: pytest, npm/yarn/pnpm test,
   cargo, go, make, maven, gradle. For pytest it prefers the project's `.venv`.
+- Auto-detects linters / type checkers: ruff and mypy (only if configured in
+  `pyproject.toml`/config), flake8, eslint / tsc (Node), clippy (Rust), go vet.
 
 ### Persistent memory (`memory/project.py`)
 - **Storage:** `~/.aicoder/memory/<project_id>/project_memory.json`, keyed by

@@ -251,6 +251,39 @@ def test_detect_none(tmp_path):
     assert detect_test_command(tmp_path) is None
 
 
+# ─── Lint / typecheck detection ───────────────────────────────────────────────
+
+def test_detect_lint_ruff_and_mypy(tmp_path):
+    from core.project import detect_lint_commands
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\n\n[tool.mypy]\n")
+    labels = [label for _, label in detect_lint_commands(tmp_path)]
+    assert "ruff" in labels and "mypy" in labels
+
+
+def test_detect_lint_python_unconfigured_is_empty(tmp_path):
+    from core.project import detect_lint_commands
+    (tmp_path / "pyproject.toml").write_text("[tool.pytest.ini_options]\n")  # no ruff/mypy
+    assert detect_lint_commands(tmp_path) == []
+
+
+def test_detect_lint_node_and_ts(tmp_path):
+    import json as _json
+    from core.project import detect_lint_commands
+    (tmp_path / "package.json").write_text(_json.dumps({"scripts": {"lint": "eslint ."}}))
+    (tmp_path / "tsconfig.json").write_text("{}")
+    labels = [label for _, label in detect_lint_commands(tmp_path)]
+    assert "npm run lint" in labels and "tsc" in labels
+
+
+def test_detect_lint_rust_and_go(tmp_path):
+    from core.project import detect_lint_commands
+    (tmp_path / "Cargo.toml").write_text("[package]\n")
+    assert [label for _, label in detect_lint_commands(tmp_path)] == ["clippy"]
+    (tmp_path / "go.mod").write_text("module x\n")  # both now
+    labels = [label for _, label in detect_lint_commands(tmp_path)]
+    assert "clippy" in labels and "go vet" in labels
+
+
 # ─── Persistent project memory ────────────────────────────────────────────────
 
 def test_project_memory_roundtrip(tmp_path, monkeypatch):

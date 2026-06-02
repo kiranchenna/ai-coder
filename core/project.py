@@ -93,3 +93,58 @@ def detect_test_command(workspace: Path) -> tuple[str, str] | None:
         return ("./gradlew test" if _exists(root, "gradlew") else "gradle test", "gradle")
 
     return None
+
+
+def _node_pm(root: Path) -> str:
+    if _exists(root, "pnpm-lock.yaml"):
+        return "pnpm"
+    if _exists(root, "yarn.lock"):
+        return "yarn"
+    if _exists(root, "bun.lockb"):
+        return "bun"
+    return "npm"
+
+
+def detect_lint_commands(workspace: Path) -> list[tuple[str, str]]:
+    """
+    Return [(command, label)] for the project's linters / type checkers, or an
+    empty list. Python tools are config-gated (only run if configured) to avoid
+    noisy default-config output; others key off marker files.
+    """
+    root = workspace
+    cmds: list[tuple[str, str]] = []
+
+    # ── Node / TypeScript ──────────────────────────────────────────────────────
+    if _exists(root, "package.json"):
+        pm = _node_pm(root)
+        try:
+            pkg = json.loads((root / "package.json").read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            pkg = {}
+        if "lint" in pkg.get("scripts", {}):
+            cmds.append((f"{pm} run lint", f"{pm} run lint"))
+        if _exists(root, "tsconfig.json"):
+            cmds.append(("npx --no-install tsc --noEmit", "tsc"))
+
+    # ── Python (only if a tool is configured) ──────────────────────────────────
+    pyproject = ""
+    if _exists(root, "pyproject.toml"):
+        try:
+            pyproject = (root / "pyproject.toml").read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            pyproject = ""
+    py = _python_executable(root)
+    if "[tool.ruff" in pyproject or _exists(root, "ruff.toml") or _exists(root, ".ruff.toml"):
+        cmds.append((f"{py} -m ruff check .", "ruff"))
+    if "[tool.mypy" in pyproject or _exists(root, "mypy.ini") or _exists(root, ".mypy.ini"):
+        cmds.append((f"{py} -m mypy .", "mypy"))
+    if _exists(root, ".flake8"):
+        cmds.append((f"{py} -m flake8", "flake8"))
+
+    # ── Rust / Go ──────────────────────────────────────────────────────────────
+    if _exists(root, "Cargo.toml"):
+        cmds.append(("cargo clippy -q", "clippy"))
+    if _exists(root, "go.mod"):
+        cmds.append(("go vet ./...", "go vet"))
+
+    return cmds
