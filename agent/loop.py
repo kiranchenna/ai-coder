@@ -27,7 +27,7 @@ from langchain_core.messages import (
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.prompt import Prompt
+from rich.prompt import Confirm, Prompt
 from rich.status import Status
 
 from core.model import get_chat_model
@@ -159,8 +159,11 @@ def run_agent_repl(workspace: Path) -> None:
     """Interactive agent loop over the given workspace."""
     from core.config import get_config
 
+    from agent.planner import Planner
+
     model_name = get_config().model_name
     session = AgentSession(workspace)
+    planner = Planner(workspace, session)
 
     console.print(
         Panel.fit(
@@ -168,10 +171,14 @@ def run_agent_repl(workspace: Path) -> None:
             f"[dim]Workspace:[/dim] {workspace}\n"
             f"[dim]Model:[/dim]     {model_name}\n"
             f"[dim]Tools:[/dim]     {', '.join(session.tools_by_name)}\n\n"
-            f"[dim]Describe a task in plain English. Type 'exit' to quit.[/dim]",
+            f"[dim]Describe a task in plain English, or 'plan <goal>' for a multi-step build.\n"
+            f"Type 'exit' to quit.[/dim]",
             border_style="magenta",
         )
     )
+
+    if planner.has_active_plan():
+        console.print("[dim]An in-progress plan exists for this project — type 'resume' to continue it.[/dim]")
 
     while True:
         console.print()
@@ -183,11 +190,30 @@ def run_agent_repl(workspace: Path) -> None:
 
         if not user:
             continue
-        if user.lower() in _EXIT_WORDS:
+
+        low = user.lower()
+        if low in _EXIT_WORDS:
             console.print("[dim]Goodbye.[/dim]")
             break
 
         try:
+            if low == "resume":
+                planner.run()
+                continue
+            if low == "plan" or low.startswith("plan "):
+                goal = user[5:].strip()
+                if not goal:
+                    console.print("[yellow]Usage: plan <what to build>[/yellow]")
+                    continue
+                plan = planner.create_plan(goal)
+                if not plan:
+                    console.print("[yellow]Couldn't produce a task plan — try rephrasing the goal.[/yellow]")
+                    continue
+                planner.show(plan)
+                if Confirm.ask("Execute this plan now?", default=True):
+                    planner.run()
+                continue
+
             session.send(user)
         except KeyboardInterrupt:
             console.print("\n[yellow]Interrupted — back to the prompt.[/yellow]")
