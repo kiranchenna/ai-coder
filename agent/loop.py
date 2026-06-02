@@ -16,6 +16,8 @@ extend in later phases (planner, verify loop, memory).
 
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
 
 from langchain_core.messages import (
@@ -46,6 +48,56 @@ def _short(value, limit: int = 60) -> str:
     """One-line preview of a tool argument for display."""
     s = str(value).replace("\n", "\\n")
     return s if len(s) <= limit else s[:limit] + "…"
+
+
+def _balanced_json_objects(text: str) -> list[str]:
+    """Extract top-level {...} substrings via brace matching (string-aware)."""
+    objects: list[str] = []
+    depth = 0
+    start = -1
+    in_str = False
+    escape = False
+    for i, ch in enumerate(text):
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    objects.append(text[start : i + 1])
+    return objects
+
+
+def _extract_text_tool_calls(content: str) -> list[dict]:
+    """
+    Recover tool calls that a model emitted as JSON *text* instead of via native
+    tool calling (common with local models, e.g. qwen2.5-coder over Ollama).
+    Looks for {"name": ..., "arguments"/"args"/"parameters": {...}} objects.
+    """
+    calls: list[dict] = []
+    for candidate in _balanced_json_objects(content or ""):
+        try:
+            obj = json.loads(candidate)
+        except Exception:
+            continue
+        if not isinstance(obj, dict) or "name" not in obj:
+            continue
+        args = obj.get("arguments", obj.get("args", obj.get("parameters", {})))
+        if isinstance(args, dict):
+            calls.append({"name": obj["name"], "args": args, "id": ""})
+    return calls
 
 
 def _repo_overview(workspace: Path) -> str:
@@ -97,22 +149,40 @@ class AgentSession:
             ai = self._invoke()
             self.messages.append(ai)
 
-            calls = ai.tool_calls or []
-            if not calls:
-                text = (ai.content or "").strip()
-                console.print()
-                if text:
-                    console.print(Markdown(text))
-                else:
-                    console.print("[dim](no further response)[/dim]")
-                return text
+            # 1) Native tool calls (preferred path).
+            if ai.tool_calls:
+                for call in ai.tool_calls:
+                    self._render_call(call)
+                    result = self._exec(call)
+                    self.messages.append(
+                        ToolMessage(content=result, tool_call_id=call.get("id", ""))
+                    )
+                continue
 
-            for call in calls:
-                self._render_call(call)
-                result = self._exec(call)
+            # 2) Fallback: some local models emit tool calls as JSON text in the
+            #    content instead of via native tool calling. Recover and run them.
+            text_calls = [
+                c for c in _extract_text_tool_calls(ai.content or "")
+                if c["name"] in self.tools_by_name
+            ]
+            if text_calls:
+                results = []
+                for call in text_calls:
+                    self._render_call(call)
+                    results.append(f"{call['name']} -> {self._exec(call)}")
                 self.messages.append(
-                    ToolMessage(content=result, tool_call_id=call.get("id", ""))
+                    HumanMessage(
+                        content="Tool results:\n" + "\n\n".join(results)
+                        + "\n\nContinue using your tools, or give your final answer."
+                    )
                 )
+                continue
+
+            # 3) Genuine final answer.
+            text = (ai.content or "").strip()
+            console.print()
+            console.print(Markdown(text) if text else "[dim](no further response)[/dim]")
+            return text
 
         console.print(
             "[yellow]⚠ Reached the step limit for this turn. "
