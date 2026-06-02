@@ -39,15 +39,23 @@ ollama pull nomic-embed-text-v2-moe # embeddings for RAG
 
 ## Installation
 
+### From PyPI
+
 ```bash
-git clone <repository-url>
+pip install ai-coder
+
+aicoder --selftest               # confirm the model supports tool calling
+aicoder                          # start the agent in the current directory
+```
+
+### From source (development)
+
+```bash
+git clone https://github.com/kiranchenna/ai-coder
 cd ai-coder
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -e .
-
-aicoder --selftest               # confirm the model supports tool calling
-aicoder                          # start the agent in the current directory
 ```
 
 ---
