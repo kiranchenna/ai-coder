@@ -1,5 +1,0 @@
-aicoder_cli
-commands
-core
-phases
-tools

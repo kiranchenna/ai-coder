@@ -94,12 +94,12 @@ cli.py
 ## Configuration
 
 - File: `~/.aicoder/config.yaml` (auto-created on first run)
-- Default model: `qwen3.5:4b` via Ollama at `http://localhost:11434`
+- Default model: `qwen3.5:2b` via Ollama at `http://localhost:11434`
 
 ```yaml
 model:
   provider: ollama
-  name: qwen3.5:4b
+  name: qwen3.5:2b
   base_url: http://localhost:11434
   temperature: 0.3
   temperature_precise: 0.1
@@ -213,4 +213,4 @@ pyinstaller --name aicoder --onefile cli.py
 # dist/aicoder  (or dist/aicoder.exe on Windows)
 ```
 
-Requires Ollama running locally: `ollama pull qwen3.5:4b`
+Requires Ollama running locally: `ollama pull qwen3.5:2b`

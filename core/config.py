@@ -24,7 +24,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # NOTE: Change 'name' to any model you have pulled via `ollama pull <model>`.
         # Good coding models: qwen2.5-coder:4b, qwen2.5-coder:7b, deepseek-coder:6.7b
         "provider": "ollama",
-        "name": "qwen3.5:4b",
+        "name": "qwen3.5:2b",
         "base_url": "http://localhost:11434",
         "temperature": 0.3,
         "temperature_precise": 0.1,

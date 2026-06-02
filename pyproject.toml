@@ -4,21 +4,21 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-coder"
-version = "2.0.0"
-description = "AI-powered coding assistant CLI — local, offline, powerful"
+version = "3.0.0"
+description = "Local, offline agentic coding assistant — plans, edits, runs, and verifies"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "langchain-ollama>=0.2.0",
-    "langchain-core>=0.3.0",
+    "langchain-ollama>=1.0",
+    "langchain-core>=1.0",
     "rich>=13.0.0",
     "pyyaml>=6.0",
     "ddgs>=9.0.0",
-    "httpx>=0.27.0",
+    "httpx>=0.28",
     "beautifulsoup4>=4.12.0",
     "packaging>=24.0",
     "pathspec>=0.12.0",
-    "chromadb>=0.5.0",
+    "chromadb>=1.0",
 ]
 
 [project.scripts]
@@ -26,7 +26,7 @@ aicoder = "aicoder_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["core*", "tools*", "commands*", "aicoder_cli*", "phases*"]
+include = ["core*", "tools*", "commands*", "aicoder_cli*", "phases*", "agent*"]
 
 [tool.setuptools.package-data]
 "*" = ["*.yaml", "*.md"]

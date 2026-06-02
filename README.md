@@ -29,7 +29,7 @@ AICoder is an interactive terminal assistant that understands your project, rese
 
 ```bash
 # Pull the default model
-ollama pull qwen3.5:4b
+ollama pull qwen3.5:2b
 
 # Recommended: dedicated embedding model (faster RAG)
 ollama pull nomic-embed-text-v2-moe
@@ -287,7 +287,7 @@ Auto-created at `~/.aicoder/config.yaml` on first run:
 ```yaml
 model:
   provider: ollama
-  name: qwen3.5:4b               # any model you have pulled
+  name: qwen3.5:2b               # any model you have pulled
   base_url: http://localhost:11434
   temperature: 0.3
   temperature_precise: 0.1
@@ -317,7 +317,8 @@ memory:
 ```
 
 **Good model choices** (`ollama pull <model>`):
-- `qwen3.5:4b` — fast, lightweight, great for most tasks *(default)*
+- `qwen3.5:2b` — fastest, lightest, great for most tasks *(default)*
+- `qwen3.5:4b` — larger, slightly stronger general reasoning
 - `qwen2.5-coder:7b` — stronger coding focus
 - `qwen2.5-coder:14b` — best quality, needs more RAM
 

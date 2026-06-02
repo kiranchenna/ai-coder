@@ -28,15 +28,13 @@ Examples:
   aicoder --model qwen2.5-coder:7b  # Use a different Ollama model
   aicoder --shell-mode never        # Auto-approve shell commands this session
 
-Slash commands while running:
-  /help          See all commands
-  /project X     Launch the 7-phase project planning pipeline
-  /fix [file]    Fix bugs in a file
-  /research X    Web-search a topic
-  /versions X    Get latest version of a package
-  /stack X       Recommend a tech stack
-  /run cmd        Run a shell command
-  /shell-mode     Change shell confirmation mode
+In the agent (default):
+  Just describe a task in plain English — it reads, edits, runs, and verifies.
+  exit / quit     Leave the session
+
+Flags:
+  --selftest      Check the model supports native tool calling, then exit
+  --legacy        Launch the old 7-phase pipeline REPL instead of the agent
         """,
     )
 
@@ -64,12 +62,22 @@ Slash commands while running:
     parser.add_argument(
         "--version",
         action="version",
-        version="aicoder 2.0.0",
+        version="aicoder 3.0.0",
     )
     parser.add_argument(
         "--config",
         action="store_true",
         help="Show config file location and current settings, then exit",
+    )
+    parser.add_argument(
+        "--selftest",
+        action="store_true",
+        help="Verify the configured model supports native tool calling, then exit",
+    )
+    parser.add_argument(
+        "--legacy",
+        action="store_true",
+        help="Launch the legacy 7-phase pipeline REPL instead of the agent",
     )
 
     args = parser.parse_args()
@@ -108,9 +116,18 @@ Slash commands while running:
     # ── Verify Ollama is available ─────────────────────────────────────────────
     _check_ollama(cfg.model_base_url, cfg.model_name)
 
-    # ── Launch REPL ───────────────────────────────────────────────────────────
-    from core.repl import run_repl
-    run_repl(workspace=workspace)
+    # ── Self-test: confirm native tool calling, then exit ──────────────────────
+    if args.selftest:
+        from core.model import selftest
+        sys.exit(0 if selftest() else 1)
+
+    # ── Launch ─────────────────────────────────────────────────────────────────
+    if args.legacy:
+        from core.repl import run_repl
+        run_repl(workspace=workspace)
+    else:
+        from agent.loop import run_agent_repl
+        run_agent_repl(workspace=workspace)
 
 
 def _check_ollama(base_url: str, model_name: str) -> None:

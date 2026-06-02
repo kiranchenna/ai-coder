@@ -34,7 +34,7 @@ def _make_config(tmp_path, overrides=None):
 
 def test_default_model_name(tmp_path):
     cfg = _make_config(tmp_path)
-    assert cfg.model_name == "qwen3.5:4b"
+    assert cfg.model_name == "qwen3.5:2b"
 
 
 def test_default_shell_mode(tmp_path):
