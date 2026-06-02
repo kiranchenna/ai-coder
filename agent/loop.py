@@ -49,6 +49,15 @@ def _short(value, limit: int = 60) -> str:
     return s if len(s) <= limit else s[:limit] + "…"
 
 
+def _msg_text(m) -> str:
+    """A message's textual content as a string (content may be a list of blocks)."""
+    return m.content if isinstance(m.content, str) else str(m.content)
+
+
+def _msg_chars(m) -> int:
+    return len(_msg_text(m))
+
+
 def _is_actionable_tool_message(content: str) -> bool:
     """
     Decide whether text-emitted tool-call JSON is an actual call vs. an
@@ -108,11 +117,17 @@ class AgentSession:
                 )
             )
         ]
+        # Char budget for non-system history before older turns are summarized.
+        # ~2 chars/token of the window leaves room for the system prompt + reply.
+        from core.config import get_config
+
+        self._history_budget = max(8_000, get_config().model_context_length * 2)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def send(self, user_input: str) -> str:
         """Process one user message to completion (through any tool calls)."""
+        self._compact_history_if_needed()
         self.messages.append(HumanMessage(content=user_input))
 
         for _ in range(MAX_STEPS):
@@ -204,6 +219,70 @@ class AgentSession:
     def reset(self) -> None:
         """Forget the conversation, keeping the system prompt (and saved memory)."""
         self.messages = self.messages[:1]
+
+    # ── Context management ──────────────────────────────────────────────────────
+
+    def _compact_history_if_needed(self) -> None:
+        """
+        Keep the conversation within the context budget by summarizing older
+        turns. Preserves the system prompt and the recent turns, and only splits
+        at a user-message boundary so a ToolMessage is never orphaned from its
+        AIMessage (which would break the next model call).
+        """
+        if len(self.messages) <= 2:
+            return
+        system, rest = self.messages[0], self.messages[1:]
+        if sum(_msg_chars(m) for m in rest) <= self._history_budget:
+            return
+
+        # Smallest user-message boundary whose tail fits the budget (largest
+        # recent window we can keep). Tail shrinks as the index advances.
+        keep_from = None
+        for i, m in enumerate(rest):
+            if isinstance(m, HumanMessage):
+                if sum(_msg_chars(x) for x in rest[i:]) <= self._history_budget:
+                    keep_from = i
+                    break
+        if not keep_from:  # None or 0 → nothing safe to drop
+            return
+
+        older, recent = rest[:keep_from], rest[keep_from:]
+        summary = self._summarize_messages(older)
+        note = SystemMessage(content=f"[Summary of earlier conversation]\n{summary}")
+        self.messages = [system, note] + recent
+        console.print("[dim]📝 Compacted earlier conversation to stay within context.[/dim]")
+
+    def _summarize_messages(self, msgs: list) -> str:
+        """Summarize older messages into a compact note (model call, tail fallback)."""
+        lines: list[str] = []
+        for m in msgs:
+            if isinstance(m, SystemMessage):
+                lines.append(_msg_text(m)[:500])  # fold in a previous summary
+            elif isinstance(m, HumanMessage):
+                lines.append("User: " + _msg_text(m)[:400])
+            elif isinstance(m, AIMessage):
+                text = _msg_text(m).strip()
+                if text:
+                    lines.append("Assistant: " + text[:400])
+                for tc in (m.tool_calls or []):
+                    lines.append(f"[called {tc.get('name', '?')}]")
+            elif isinstance(m, ToolMessage):
+                lines.append("[tool result] " + _msg_text(m)[:200])
+        transcript = "\n".join(lines)
+
+        try:
+            ai = get_chat_model(precise=True).invoke([
+                SystemMessage(content=(
+                    "Summarize this earlier conversation between a user and a coding "
+                    "agent. Preserve key decisions, files changed, what was done, and "
+                    "any unresolved tasks. Be concise (a short paragraph)."
+                )),
+                HumanMessage(content=transcript[:8000]),
+            ])
+            summary = ai.content if isinstance(ai.content, str) else str(ai.content)
+            return summary.strip() or transcript[-2000:]
+        except Exception:
+            return transcript[-2000:]  # fallback: keep the most recent context
 
     def _exec(self, call: dict) -> str:
         name = call.get("name", "")

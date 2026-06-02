@@ -78,6 +78,12 @@ Per user turn (`AgentSession.send`):
 4. When the model returns a plain answer (no tool calls), it is shown and the
    turn ends. A step cap (12) bounds runaway loops.
 
+**Context management:** before each turn, if the conversation exceeds a char
+budget (~2× the model's context window in chars), older turns are summarized
+into a single note while recent turns are kept verbatim — split only at a
+user-message boundary so a tool result is never orphaned from its call. This
+keeps long sessions and large `plan` builds within the context window.
+
 ---
 
 ## Planning large tasks

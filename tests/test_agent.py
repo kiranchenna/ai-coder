@@ -89,6 +89,56 @@ def test_is_fetch_error():
     assert is_fetch_error("# Real Page\n\nActual content here.") is False
 
 
+# ─── History compaction (context management) ──────────────────────────────────
+
+def _mk_session_with_history(messages, budget):
+    from agent.loop import AgentSession
+    s = AgentSession.__new__(AgentSession)
+    s.messages = messages
+    s._history_budget = budget
+    return s
+
+
+def test_compaction_noop_under_budget():
+    from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+    msgs = [SystemMessage(content="SYS"), HumanMessage(content="hi"), AIMessage(content="ok")]
+    s = _mk_session_with_history(list(msgs), budget=10_000)
+    s._compact_history_if_needed()
+    assert s.messages == msgs  # unchanged
+
+
+def test_compaction_summarizes_old_keeps_recent(monkeypatch):
+    from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
+
+    # force the summary model call into its fallback (no Ollama needed)
+    def boom(*a, **k):
+        raise RuntimeError("no model in test")
+    monkeypatch.setattr("agent.loop.get_chat_model", boom)
+
+    msgs = [
+        SystemMessage(content="SYSTEM PROMPT"),
+        HumanMessage(content="u1 " + "x" * 60),
+        AIMessage(content="", tool_calls=[{"name": "read_file", "args": {}, "id": "1"}]),
+        ToolMessage(content="file contents " + "y" * 60, tool_call_id="1"),
+        AIMessage(content="a1 " + "z" * 60),
+        HumanMessage(content="u2 recent"),
+        AIMessage(content="a2 recent answer"),
+    ]
+    s = _mk_session_with_history(list(msgs), budget=40)
+    s._compact_history_if_needed()
+
+    # system prompt preserved as message[0]
+    assert s.messages[0].content == "SYSTEM PROMPT"
+    # a summary note was inserted right after it
+    assert isinstance(s.messages[1], SystemMessage)
+    assert s.messages[1].content.startswith("[Summary of earlier conversation]")
+    # the kept recent window starts at a user message (no orphaned ToolMessage)
+    assert isinstance(s.messages[2], HumanMessage)
+    assert not any(isinstance(m, ToolMessage) for m in s.messages[2:])
+    # the latest turn is preserved verbatim
+    assert s.messages[-1].content == "a2 recent answer"
+
+
 # ─── RAG chunking ─────────────────────────────────────────────────────────────
 
 def test_chunk_text_overlapping():
