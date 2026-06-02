@@ -26,6 +26,15 @@ MAX_READ_CHARS = 20_000
 MAX_SHELL_OUTPUT = 6_000
 
 
+def _format_hits(hits: list[dict]) -> str:
+    """Render knowledge-base search results as sourced, separated blocks."""
+    return "\n\n---\n\n".join(
+        f"[source: {h['metadata'].get('source') or h['metadata'].get('title') or 'cached'}]\n"
+        f"{h['content']}"
+        for h in hits
+    )
+
+
 def _apply_write(workspace: Path, path: str, new_content: str, existing: str | None = None) -> str:
     """Shared write path: diff preview, config-driven confirmation, backup, write."""
     from core.config import get_config
@@ -62,8 +71,7 @@ def _apply_write(workspace: Path, path: str, new_content: str, existing: str | N
             return f"User declined the change to {path}."
 
     if not is_new and cfg.file_backup and old:
-        backup = target.with_suffix(target.suffix + ".bak")
-        backup.write_text(old, encoding="utf-8")
+        ft.backup_file(workspace, path)
 
     ft.write_file(workspace, path, new_content)
     verb = "Created" if is_new else "Updated"
@@ -225,12 +233,7 @@ def build_tools(workspace: Path) -> list:
         except Exception:
             cached = []
         if cached:
-            body = "\n\n---\n\n".join(
-                f"[source: {c['metadata'].get('source') or c['metadata'].get('title') or 'cached'}]\n"
-                f"{c['content']}"
-                for c in cached
-            )
-            return f"(from cached knowledge)\n\n{body}"
+            return f"(from cached knowledge)\n\n{_format_hits(cached)}"
 
         results = search_web(query)
         if not results:
@@ -353,8 +356,15 @@ def build_tools(workspace: Path) -> list:
             chunks = KnowledgeBase.get().add(
                 text, source=f"document:{path}", title=path, ttl_hours=24 * 365
             )
-        except Exception:
-            chunks = 0
+        except Exception as e:
+            # Don't claim success: ingestion failed (e.g. Ollama/embedding model
+            # unavailable). Return the text but make the failure explicit.
+            note = (
+                f"[WARNING: could not ingest '{path}' into the knowledge base "
+                f"({e}); it will NOT be searchable via rag_search. Is the embedding "
+                f"model pulled and Ollama running?]\n\n"
+            )
+            return note + (text[:MAX_READ_CHARS] if len(text) > MAX_READ_CHARS else text)
 
         note = f"[Ingested '{path}' into the knowledge base as {chunks} chunk(s).]\n\n"
         if len(text) > MAX_READ_CHARS:
@@ -375,11 +385,7 @@ def build_tools(workspace: Path) -> list:
             return f"ERROR: knowledge base unavailable: {e}"
         if not results:
             return "Nothing relevant found in the knowledge base yet."
-        return "\n\n---\n\n".join(
-            f"[source: {r['metadata'].get('source') or r['metadata'].get('title') or 'cached'}]\n"
-            f"{r['content']}"
-            for r in results
-        )
+        return _format_hits(results)
 
     return [
         list_files, find_files, search_code, read_file,

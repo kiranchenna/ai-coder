@@ -5,6 +5,7 @@ Config is stored at ~/.aicoder/config.yaml
 Created automatically on first run with sensible defaults.
 """
 
+import hashlib
 import os
 import sys
 from pathlib import Path
@@ -16,6 +17,14 @@ import yaml
 AICODER_HOME = Path.home() / ".aicoder"
 CONFIG_PATH  = AICODER_HOME / "config.yaml"
 MEMORY_DIR   = AICODER_HOME / "memory"
+
+
+def project_id(root: Path) -> str:
+    """Stable per-project identifier (name + short path hash). Used to key
+    per-project data (memory, plans) under MEMORY_DIR."""
+    resolved = root.resolve()
+    digest = hashlib.md5(str(resolved).encode()).hexdigest()[:8]
+    return f"{resolved.name}_{digest}"
 
 # ─── Defaults ─────────────────────────────────────────────────────────────────
 

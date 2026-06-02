@@ -9,6 +9,7 @@ Three confirmation modes (user-toggleable at runtime via /shell-mode):
 
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 from rich.console import Console
@@ -66,9 +67,6 @@ def run_command(
     Returns:
         (stdout, stderr, returncode)
     """
-    stdout_lines: list[str] = []
-    stderr_lines: list[str] = []
-
     try:
         process = subprocess.Popen(
             command,
@@ -80,33 +78,45 @@ def run_command(
             encoding="utf-8",
             errors="replace",
         )
-
-        if stream_output:
-            # Stream stdout live
-            for line in process.stdout:  # type: ignore[union-attr]
-                stdout_lines.append(line)
-                console.print(line, end="", markup=False)
-
-            # Collect stderr after
-            stderr_text = process.stderr.read()  # type: ignore[union-attr]
-            stderr_lines = [stderr_text] if stderr_text else []
-            process.wait(timeout=timeout)
-        else:
-            stdout_text, stderr_text = process.communicate(timeout=timeout)
-            stdout_lines = [stdout_text]
-            stderr_lines = [stderr_text] if stderr_text else []
-
-    except subprocess.TimeoutExpired:
-        process.kill()
-        console.print(f"[yellow]⚠ Command timed out after {timeout}s[/yellow]")
-        stderr_lines.append(f"TimeoutExpired after {timeout}s")
-        return "".join(stdout_lines), "".join(stderr_lines), -1
     except Exception as e:
         console.print(f"[red]⚠ Failed to run command: {e}[/red]")
         return "", str(e), -1
 
-    returncode = process.returncode
-    return "".join(stdout_lines), "".join(stderr_lines), returncode
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+
+    # Drain stdout and stderr concurrently. Reading them sequentially can
+    # deadlock: a child that fills the (~64KB) stderr pipe buffer blocks while we
+    # are still draining stdout, so stdout never reaches EOF.
+    def _drain_stdout() -> None:
+        for line in process.stdout:  # type: ignore[union-attr]
+            stdout_chunks.append(line)
+            if stream_output:
+                console.print(line, end="", markup=False)
+
+    def _drain_stderr() -> None:
+        for line in process.stderr:  # type: ignore[union-attr]
+            stderr_chunks.append(line)
+
+    t_out = threading.Thread(target=_drain_stdout, daemon=True)
+    t_err = threading.Thread(target=_drain_stderr, daemon=True)
+    t_out.start()
+    t_err.start()
+
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        t_out.join()
+        t_err.join()
+        console.print(f"[yellow]⚠ Command timed out after {timeout}s[/yellow]")
+        stderr_chunks.append(f"\nTimeoutExpired after {timeout}s")
+        return "".join(stdout_chunks), "".join(stderr_chunks), -1
+
+    t_out.join()
+    t_err.join()
+    return "".join(stdout_chunks), "".join(stderr_chunks), process.returncode
 
 
 def run_with_confirmation(

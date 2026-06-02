@@ -17,13 +17,7 @@ from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 
-from core.config import MEMORY_DIR
-
-
-def _project_id(root: Path) -> str:
-    """Stable identifier for a project path (name + short hash)."""
-    digest = hashlib.md5(str(root.resolve()).encode()).hexdigest()[:8]
-    return f"{root.resolve().name}_{digest}"
+from core.config import MEMORY_DIR, project_id
 
 
 class ProjectMemory:
@@ -31,7 +25,7 @@ class ProjectMemory:
 
     def __init__(self, workspace: Path):
         self.workspace = workspace.resolve()
-        self._dir = MEMORY_DIR / _project_id(self.workspace)
+        self._dir = MEMORY_DIR / project_id(self.workspace)
         self.path = self._dir / "project_memory.json"
 
     # ── Persistence ────────────────────────────────────────────────────────────
@@ -65,7 +59,9 @@ class ProjectMemory:
             if it.get("text", "").strip().lower() == text.lower():
                 return it  # already remembered
         entry = {
-            "id": hashlib.md5(f"{text}::{len(items)}".encode()).hexdigest()[:8],
+            # Text-derived id: stable and unique, since identical text is deduped
+            # above (avoids index-reuse collisions after a remove()).
+            "id": hashlib.md5(text.encode()).hexdigest()[:8],
             "text": text,
             "category": category,
             "created_at": datetime.now().isoformat(timespec="seconds"),

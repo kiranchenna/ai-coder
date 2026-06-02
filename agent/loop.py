@@ -30,7 +30,7 @@ from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.status import Status
 
-from core.model import extract_text_tool_calls, get_chat_model
+from core.model import balanced_json_objects, extract_text_tool_calls, get_chat_model
 from agent.prompts import system_prompt
 from agent.tools import build_tools
 
@@ -46,6 +46,25 @@ def _short(value, limit: int = 60) -> str:
     """One-line preview of a tool argument for display."""
     s = str(value).replace("\n", "\\n")
     return s if len(s) <= limit else s[:limit] + "…"
+
+
+def _is_actionable_tool_message(content: str) -> bool:
+    """
+    Decide whether text-emitted tool-call JSON is an actual call vs. an
+    illustrative example inside an explanation. Rejects only the clear case of a
+    small example JSON buried in a long prose answer.
+    """
+    spans = balanced_json_objects(content)
+    if not spans:
+        return False
+    remainder = content
+    for span in spans:
+        remainder = remainder.replace(span, "", 1)
+    remainder = remainder.replace("```json", "").replace("```", "").strip()
+    json_len = sum(len(s) for s in spans)
+    if json_len < 200 and len(remainder) > 500:
+        return False
+    return True
 
 
 
@@ -97,10 +116,10 @@ class AgentSession:
 
         for _ in range(MAX_STEPS):
             ai = self._invoke()
-            self.messages.append(ai)
 
             # 1) Native tool calls (preferred path).
             if ai.tool_calls:
+                self.messages.append(ai)
                 for call in ai.tool_calls:
                     self._render_call(call)
                     result = self._exec(call)
@@ -111,11 +130,17 @@ class AgentSession:
 
             # 2) Fallback: some local models emit tool calls as JSON text in the
             #    content instead of via native tool calling. Recover and run them.
+            content = ai.content or ""
             text_calls = [
-                c for c in extract_text_tool_calls(ai.content or "")
+                c for c in extract_text_tool_calls(content)
                 if c["name"] in self.tools_by_name
             ]
-            if text_calls:
+            if text_calls and _is_actionable_tool_message(content):
+                # Replace the raw JSON with a short note so the model can't re-read
+                # and re-emit the same call on the next turn (avoids re-execution).
+                self.messages.append(AIMessage(
+                    content=f"(Requested tools: {', '.join(c['name'] for c in text_calls)})"
+                ))
                 results = []
                 for call in text_calls:
                     self._render_call(call)
@@ -129,7 +154,8 @@ class AgentSession:
                 continue
 
             # 3) Genuine final answer.
-            text = (ai.content or "").strip()
+            self.messages.append(ai)
+            text = content.strip()
             console.print()
             console.print(Markdown(text) if text else "[dim](no further response)[/dim]")
             return text

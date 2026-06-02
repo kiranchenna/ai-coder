@@ -22,9 +22,8 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.rule import Rule
 
-from core.config import MEMORY_DIR
-from core.model import get_chat_model
-from memory.project import _project_id
+from core.config import MEMORY_DIR, project_id
+from core.model import balanced_json_arrays, get_chat_model
 
 console = Console()
 
@@ -42,15 +41,22 @@ _STATUS_ICON = {"done": "✅", "failed": "❌", "pending": "○", "in_progress":
 
 
 def _parse_tasks(text: str) -> list[dict]:
-    """Extract a JSON array of tasks from model output, tolerantly."""
-    match = re.search(r"\[.*\]", text or "", re.DOTALL)
-    if not match:
-        return []
-    try:
-        data = json.loads(match.group())
-    except Exception:
-        return []
-    return [t for t in data if isinstance(t, dict)] if isinstance(data, list) else []
+    """Extract a JSON array of task objects from model output, tolerantly.
+
+    Scans for balanced top-level [...] spans (string-aware) and returns the first
+    that parses to a list of dicts — so prose or stray brackets around the array
+    (common with small local models) don't break parsing.
+    """
+    for span in balanced_json_arrays(text or ""):
+        try:
+            data = json.loads(span)
+        except Exception:
+            continue
+        if isinstance(data, list):
+            dicts = [t for t in data if isinstance(t, dict)]
+            if dicts:
+                return dicts
+    return []
 
 
 class Planner:
@@ -59,7 +65,7 @@ class Planner:
     def __init__(self, workspace: Path, session):
         self.workspace = workspace.resolve()
         self.session = session
-        self.state_file = MEMORY_DIR / _project_id(self.workspace) / "plan.json"
+        self.state_file = MEMORY_DIR / project_id(self.workspace) / "plan.json"
 
     # ── State ──────────────────────────────────────────────────────────────────
 
@@ -79,7 +85,12 @@ class Planner:
 
     def has_active_plan(self) -> bool:
         plan = self.load()
-        return bool(plan and any(t["status"] == "pending" for t in plan.get("tasks", [])))
+        if not plan:
+            return False
+        return any(
+            t.get("status", "pending") in ("pending", "in_progress")
+            for t in plan.get("tasks", [])
+        )
 
     # ── Planning ───────────────────────────────────────────────────────────────
 
@@ -133,8 +144,9 @@ class Planner:
 
     def show(self, plan: dict) -> None:
         lines = [
-            f"  {_STATUS_ICON.get(t['status'], '○')} {t['id']}. {t['title']}"
-            for t in plan["tasks"]
+            f"  {_STATUS_ICON.get(t.get('status', 'pending'), '○')} {t.get('id', '?')}. "
+            f"{t.get('title', 'task')}"
+            for t in plan.get("tasks", [])
         ]
         console.print(
             Panel(
@@ -153,14 +165,15 @@ class Planner:
             return
 
         self.show(plan)
-        tasks = plan["tasks"]
-        done_count = sum(1 for t in tasks if t["status"] == "done")
+        tasks = plan.get("tasks", [])
+        done_count = sum(1 for t in tasks if t.get("status") == "done")
         if done_count:
             console.print(f"[dim]Resuming — {done_count}/{len(tasks)} tasks already done.[/dim]")
 
         for task in tasks:
-            if task["status"] == "done":
+            if task.get("status") == "done":
                 continue
+            task.setdefault("status", "pending")
 
             console.print()
             console.print(Rule(f"[bold cyan]Task {task['id']}: {task['title']}[/bold cyan]"))

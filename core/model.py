@@ -22,9 +22,9 @@ from langchain_core.messages import HumanMessage
 # in the message content instead of via native tool calling. These helpers recover
 # them so the agent loop can execute them anyway.
 
-def balanced_json_objects(text: str) -> list[str]:
-    """Extract top-level {...} substrings via brace matching (string-aware)."""
-    objects: list[str] = []
+def _balanced_spans(text: str, open_ch: str, close_ch: str) -> list[str]:
+    """Extract top-level open_ch...close_ch substrings via matching (string-aware)."""
+    spans: list[str] = []
     depth = 0
     start = -1
     in_str = False
@@ -40,16 +40,26 @@ def balanced_json_objects(text: str) -> list[str]:
             continue
         if ch == '"':
             in_str = True
-        elif ch == "{":
+        elif ch == open_ch:
             if depth == 0:
                 start = i
             depth += 1
-        elif ch == "}":
+        elif ch == close_ch:
             if depth > 0:
                 depth -= 1
                 if depth == 0 and start >= 0:
-                    objects.append(text[start : i + 1])
-    return objects
+                    spans.append(text[start : i + 1])
+    return spans
+
+
+def balanced_json_objects(text: str) -> list[str]:
+    """Extract top-level {...} substrings via brace matching (string-aware)."""
+    return _balanced_spans(text, "{", "}")
+
+
+def balanced_json_arrays(text: str) -> list[str]:
+    """Extract top-level [...] substrings via bracket matching (string-aware)."""
+    return _balanced_spans(text, "[", "]")
 
 
 def extract_text_tool_calls(content: str) -> list[dict]:
@@ -67,6 +77,8 @@ def extract_text_tool_calls(content: str) -> list[dict]:
         if not isinstance(obj, dict) or "name" not in obj:
             continue
         args = obj.get("arguments", obj.get("args", obj.get("parameters", {})))
+        if args is None:  # explicit null args (e.g. a zero-arg tool) → treat as empty
+            args = {}
         if isinstance(args, dict):
             calls.append({"name": obj["name"], "args": args, "id": ""})
     return calls

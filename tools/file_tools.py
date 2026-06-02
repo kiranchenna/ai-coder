@@ -101,88 +101,6 @@ def show_diff(diff_text: str, filename: str) -> None:
     )
 
 
-# ─── Reviewed write ───────────────────────────────────────────────────────────
-
-def write_files_with_review(
-    files: dict[str, str],
-    workspace: Path,
-    force_accept: bool = False,
-) -> list[str]:
-    """
-    Write AI-generated file blocks with diff preview, optional confirmation,
-    and automatic backup of overwritten files.
-
-    Behaviour is controlled by two config settings:
-      files.confirmation : always | auto | never
-        always — show diff and ask [y/N] before each changed file
-        auto   — show diff but apply automatically (informational only)
-        never  — skip diff, write immediately
-      files.backup : true | false
-        Write a .bak copy of any file before overwriting it.
-
-    Args:
-        files:        {rel_path: content} dict from parse_file_blocks()
-        workspace:    Workspace root directory
-        force_accept: Bypass confirmation regardless of config
-
-    Returns:
-        List of relative paths that were actually written to disk
-    """
-    from rich.prompt import Confirm
-    from core.config import get_config
-
-    cfg = get_config()
-    mode      = cfg.file_confirmation  # always | auto | never
-    do_backup = cfg.file_backup
-    written: list[str] = []
-
-    for rel_path, new_content in files.items():
-        path = resolve(workspace, rel_path)
-        is_new = not path.exists()
-        old_content = ""
-
-        if not is_new:
-            try:
-                old_content = path.read_text(encoding="utf-8", errors="replace")
-            except Exception:
-                pass
-
-        diff_text = generate_diff(old_content, new_content, rel_path) if not is_new else ""
-
-        # Skip if nothing actually changed
-        if not is_new and not diff_text.strip():
-            console.print(f"  [dim]= UNCHANGED: {rel_path}[/dim]")
-            continue
-
-        # Label the file
-        if is_new:
-            console.print(f"  [green bold]+ NEW:[/green bold]      [bold]{rel_path}[/bold]")
-        else:
-            console.print(f"  [yellow bold]~ MODIFIED:[/yellow bold] [bold]{rel_path}[/bold]")
-
-        # Show diff (unless never mode)
-        if not is_new and mode != "never" and diff_text:
-            show_diff(diff_text, rel_path)
-
-        # Ask for confirmation if mode is "always"
-        if mode == "always" and not force_accept:
-            if not Confirm.ask("  Apply this change?", default=True):
-                console.print("  [dim]Skipped.[/dim]")
-                continue
-
-        # Backup before overwrite
-        if not is_new and do_backup and old_content:
-            bak = path.with_suffix(path.suffix + ".bak")
-            bak.write_text(old_content, encoding="utf-8")
-            console.print(f"  [dim]  💾 Backed up → {bak.name}[/dim]")
-
-        # Write
-        write_file(workspace, rel_path, new_content)
-        written.append(rel_path)
-
-    return written
-
-
 # ─── List ─────────────────────────────────────────────────────────────────────
 
 def list_files(
@@ -318,20 +236,3 @@ def search_in_files(
                     return results
 
     return results
-
-
-# ─── Parse AI file blocks ─────────────────────────────────────────────────────
-
-def parse_file_blocks(response: str) -> dict[str, str]:
-    """Extract ===FILE: path=== ... ===END=== blocks from AI output."""
-    pattern = re.compile(r"===FILE:\s*(.+?)===\n(.*?)===END===", re.DOTALL)
-    return {
-        match.group(1).strip(): match.group(2)
-        for match in pattern.finditer(response)
-    }
-
-
-def extract_summary_block(response: str) -> str:
-    """Extract ===SUMMARY=== block from AI output."""
-    match = re.search(r"===SUMMARY===\n(.*?)===END===", response, re.DOTALL)
-    return match.group(1).strip() if match else ""
