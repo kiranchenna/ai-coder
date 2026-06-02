@@ -274,6 +274,43 @@ def build_tools(workspace: Path) -> list:
         return page
 
     @tool
+    def read_document(path: str) -> str:
+        """Read a document (PDF, Word .docx, Markdown, .txt, .rst, or HTML) from the project,
+        extract its text, ingest it into the knowledge base for later recall, and return the
+        text. Use this for PRDs, TDDs, specs, or any product document the user points you at —
+        NOT for source code files (use read_file for those)."""
+        from rag.ingest import load_document, is_supported
+        from rag.store import KnowledgeBase
+
+        try:
+            target = ft.resolve(workspace, path)
+        except PermissionError as e:
+            return f"ERROR: {e}"
+        if not target.exists() or not target.is_file():
+            return f"ERROR: document not found: {path}"
+        if not is_supported(target):
+            return (f"ERROR: unsupported document type '{target.suffix}'. "
+                    "Supported: PDF, .docx, .md, .txt, .rst, .html.")
+        try:
+            text = load_document(target)
+        except Exception as e:
+            return f"ERROR reading document: {e}"
+        if not text.strip():
+            return f"The document '{path}' contains no extractable text."
+
+        try:
+            chunks = KnowledgeBase.get().add(
+                text, source=f"document:{path}", title=path, ttl_hours=24 * 365
+            )
+        except Exception:
+            chunks = 0
+
+        note = f"[Ingested '{path}' into the knowledge base as {chunks} chunk(s).]\n\n"
+        if len(text) > MAX_READ_CHARS:
+            text = text[:MAX_READ_CHARS] + "\n[... truncated — full text is searchable via rag_search ...]"
+        return note + text
+
+    @tool
     def rag_search(query: str) -> str:
         """Search your local knowledge base — web pages and documents you have already
         researched or ingested — for information relevant to the query. Use this to recall
@@ -296,5 +333,5 @@ def build_tools(workspace: Path) -> list:
     return [
         list_files, find_files, search_code, read_file,
         write_file, edit_file, run_shell,
-        research, fetch_url, rag_search,
+        research, fetch_url, rag_search, read_document,
     ]

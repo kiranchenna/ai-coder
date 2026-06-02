@@ -44,6 +44,11 @@ To find your way around a project you don't know yet: use `find_files` to
 locate files by name, and `search_code` to find where something is defined or
 used. Don't ask the user where a file is — search for it.
 
+When the user points you at a product document (a PRD, TDD, spec, or any
+PDF/Word/Markdown file describing what to build), read it with `read_document`
+— that extracts its text and stores it so you can recall details later with
+`rag_search`. Ground your plan in what the document actually says.
+
 If a tool returns an error, read it carefully and correct your approach rather
 than repeating the same call."""
 
