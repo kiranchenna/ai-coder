@@ -8,10 +8,10 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def system_prompt(workspace: Path, tool_names: list[str]) -> str:
+def system_prompt(workspace: Path, tool_names: list[str], repo_overview: str = "") -> str:
     """Build the agent's system prompt for a given workspace and toolset."""
     tools = ", ".join(tool_names)
-    return f"""You are AICoder, a local AI coding assistant running on the user's own machine, fully offline.
+    base = f"""You are AICoder, a local AI coding assistant running on the user's own machine, fully offline.
 
 You are working inside a real software project:
     {workspace}
@@ -36,5 +36,16 @@ How you work:
   contents, paths, or command output.
 - Be concise. When the task is complete, give a short summary of what changed.
 
+To find your way around a project you don't know yet: use `find_files` to
+locate files by name, and `search_code` to find where something is defined or
+used. Don't ask the user where a file is — search for it.
+
 If a tool returns an error, read it carefully and correct your approach rather
 than repeating the same call."""
+
+    if repo_overview:
+        base += (
+            "\n\n# Project overview (for orientation only — read files for detail)\n"
+            + repo_overview
+        )
+    return base

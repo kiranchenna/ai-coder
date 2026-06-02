@@ -142,6 +142,56 @@ def build_tools(workspace: Path) -> list:
         return _apply_write(workspace, path, updated, existing=original)
 
     @tool
+    def search_code(query: str, path: str = ".") -> str:
+        """Search file CONTENTS across the project for a literal text/substring (like grep).
+        Returns matching 'file:line: text' results. Use this to locate where something is
+        defined or used when you don't know which file it's in. The query is matched
+        literally, not as a regex. Optionally restrict to a subdirectory with `path`."""
+        try:
+            results = ft.search_in_files(workspace, query, rel_path=path, max_results=40)
+        except PermissionError as e:
+            return f"ERROR: {e}"
+        if not results:
+            return f"No matches for '{query}'."
+        lines = [f"{r['file']}:{r['line_number']}: {r['line']}" for r in results]
+        out = "\n".join(lines)
+        if len(results) >= 40:
+            out += "\n[... more matches — refine your query to narrow it down ...]"
+        return out
+
+    @tool
+    def find_files(name_pattern: str, path: str = ".") -> str:
+        """Find files by NAME using a glob pattern (e.g. '*.py', 'test_*.py', '*config*').
+        Returns matching file paths relative to the project root. Use this to locate a file
+        by its name. To search file contents instead, use search_code."""
+        from core.config import get_config
+
+        cfg = get_config()
+        try:
+            base = ft.resolve(workspace, path)
+        except PermissionError as e:
+            return f"ERROR: {e}"
+        if not base.exists():
+            return f"Path not found: {path}"
+
+        ignore_dirs = set(cfg.ignore_dirs)
+        matches: list[str] = []
+        for p in sorted(base.rglob(name_pattern)):
+            if not p.is_file():
+                continue
+            if any(part in ignore_dirs for part in p.parts):
+                continue
+            matches.append(str(p.relative_to(workspace)))
+            if len(matches) >= 100:
+                break
+        if not matches:
+            return f"No files matching '{name_pattern}'."
+        out = "\n".join(matches)
+        if len(matches) >= 100:
+            out += "\n[... truncated at 100 — narrow the pattern ...]"
+        return out
+
+    @tool
     def run_shell(command: str) -> str:
         """Run a shell command in the project root and return its combined output and exit code.
         Depending on settings the user may be asked to confirm first. Use for installing
@@ -158,4 +208,4 @@ def build_tools(workspace: Path) -> list:
             out = out[:MAX_SHELL_OUTPUT] + "\n[... output truncated ...]"
         return f"exit code: {code}\n{out}".strip()
 
-    return [list_files, read_file, write_file, edit_file, run_shell]
+    return [list_files, find_files, search_code, read_file, write_file, edit_file, run_shell]

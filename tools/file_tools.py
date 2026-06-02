@@ -262,11 +262,29 @@ def search_in_files(
     rel_path: str = ".",
     case_sensitive: bool = False,
     max_results: int = 30,
+    ignore_dirs: list[str] | None = None,
+    ignore_extensions: list[str] | None = None,
 ) -> list[dict]:
-    """Simple grep-like search. Returns list of {file, line_number, line}."""
+    """
+    Simple grep-like search. Returns list of {file, line_number, line}.
+
+    Skips ignored directories (e.g. .venv, node_modules, __pycache__) and binary
+    extensions. When the ignore lists are omitted they default to the workspace
+    config, so callers don't accidentally scan virtualenvs or dependencies.
+    """
     base = resolve(workspace, rel_path)
     results: list[dict] = []
     flags = 0 if case_sensitive else re.IGNORECASE
+
+    if ignore_dirs is None or ignore_extensions is None:
+        from core.config import get_config
+        cfg = get_config()
+        if ignore_dirs is None:
+            ignore_dirs = cfg.ignore_dirs
+        if ignore_extensions is None:
+            ignore_extensions = cfg.ignore_extensions
+    ignore_dir_set = set(ignore_dirs)
+    ignore_ext_set = set(ignore_extensions)
 
     try:
         pattern = re.compile(re.escape(query), flags)
@@ -277,6 +295,10 @@ def search_in_files(
 
     for file_path in paths:
         if not file_path.is_file():
+            continue
+        if any(part in ignore_dir_set for part in file_path.parts):
+            continue
+        if file_path.suffix in ignore_ext_set:
             continue
         try:
             lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()

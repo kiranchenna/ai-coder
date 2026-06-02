@@ -147,6 +147,51 @@ class WorkspaceContext:
             self.build()
         return self._summary
 
+    def overview(self, max_depth: int = 3) -> str:
+        """
+        A compact repo overview for agent orientation — languages, file count,
+        and directory tree, WITHOUT dumping file contents (the agent reads files
+        on demand via tools). Keeps the system prompt lean.
+        """
+        from core.config import get_config
+
+        cfg = get_config()
+
+        if not self._languages:
+            ignore_dirs = set(cfg.ignore_dirs)
+            ignore_exts = set(cfg.ignore_extensions)
+            lang_counts: dict[str, int] = {}
+            count = 0
+            for path in self.root.rglob("*"):
+                if not path.is_file():
+                    continue
+                if any(part in ignore_dirs for part in path.parts):
+                    continue
+                if path.suffix in ignore_exts:
+                    continue
+                lang = _LANGUAGE_MAP.get(path.suffix.lower())
+                if lang:
+                    lang_counts[lang] = lang_counts.get(lang, 0) + 1
+                count += 1
+            self._languages = dict(sorted(lang_counts.items(), key=lambda x: -x[1]))
+            self._file_count = count
+
+        parts = [f"Project: {self.root.name}", f"Source files: {self._file_count}"]
+        if self._languages:
+            parts.append(
+                "Languages: "
+                + ", ".join(f"{l} ({n})" for l, n in list(self._languages.items())[:6])
+            )
+        tree = file_tree(
+            self.root,
+            ignore_dirs=cfg.ignore_dirs,
+            ignore_extensions=cfg.ignore_extensions,
+            max_depth=max_depth,
+        )
+        if tree:
+            parts.append("Structure:\n" + tree)
+        return "\n".join(parts)
+
     @property
     def primary_language(self) -> str:
         """Return the most common language detected in the workspace."""

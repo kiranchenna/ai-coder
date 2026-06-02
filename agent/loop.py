@@ -48,6 +48,16 @@ def _short(value, limit: int = 60) -> str:
     return s if len(s) <= limit else s[:limit] + "…"
 
 
+def _repo_overview(workspace: Path) -> str:
+    """Compact repo orientation for the system prompt (best-effort)."""
+    try:
+        from core.context import WorkspaceContext
+
+        return WorkspaceContext(workspace).overview()
+    except Exception:
+        return ""
+
+
 class AgentSession:
     """Holds conversation state and drives the tool-calling loop."""
 
@@ -57,7 +67,11 @@ class AgentSession:
         self.tools_by_name = {t.name: t for t in self.tools}
         self.llm = get_chat_model(tools=self.tools)
         self.messages = [
-            SystemMessage(content=system_prompt(workspace, list(self.tools_by_name)))
+            SystemMessage(
+                content=system_prompt(
+                    workspace, list(self.tools_by_name), _repo_overview(workspace)
+                )
+            )
         ]
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -73,9 +87,11 @@ class AgentSession:
             calls = ai.tool_calls or []
             if not calls:
                 text = (ai.content or "").strip()
+                console.print()
                 if text:
-                    console.print()
                     console.print(Markdown(text))
+                else:
+                    console.print("[dim](no further response)[/dim]")
                 return text
 
             for call in calls:
