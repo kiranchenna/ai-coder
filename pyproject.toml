@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68.0"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,6 +8,21 @@ version = "3.0.0"
 description = "Local, offline agentic coding assistant — plans, edits, runs, and verifies"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Kiran Chenna" }]
+keywords = ["ai", "agent", "coding-assistant", "ollama", "local-llm", "rag", "cli"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Utilities",
+]
 dependencies = [
     "langchain-ollama>=1.0",
     "langchain-core>=1.0",
@@ -23,8 +38,19 @@ dependencies = [
     "python-docx>=1.1",
 ]
 
+[project.urls]
+Homepage = "https://github.com/kiranchenna/ai-coder"
+Repository = "https://github.com/kiranchenna/ai-coder"
+Issues = "https://github.com/kiranchenna/ai-coder/issues"
+Changelog = "https://github.com/kiranchenna/ai-coder/blob/main/CHANGELOG.md"
+
 [project.scripts]
 aicoder = "aicoder_cli:main"
+
+[tool.setuptools]
+# cli.py is a top-level single-file module (the entry point imports it); it must
+# be shipped explicitly or `aicoder` fails on a real install.
+py-modules = ["cli"]
 
 [tool.setuptools.packages.find]
 where = ["."]
