@@ -56,6 +56,7 @@ commands are handled by the REPL (`agent/loop.py`):
 | `/model [name]` | Show or switch the model for this session |
 | `/tools` | List the agent's tools |
 | `/memory` | Show what's remembered about this project |
+| `/knowledge` | Show RAG stats; `/knowledge clear` clears this project's docs, `/knowledge clear all` wipes everything |
 | `/clear` | Forget the conversation (keeps saved memory) |
 | `/help` | Show commands |
 | `exit` / `quit` | Leave the session |

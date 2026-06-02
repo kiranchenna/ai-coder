@@ -221,6 +221,7 @@ def _handle_command(raw: str, session: "AgentSession", workspace: Path) -> None:
                 "[bold]/model [name][/bold] show or switch the model for this session\n"
                 "[bold]/tools[/bold]        list the agent's tools\n"
                 "[bold]/memory[/bold]       show what's remembered about this project\n"
+                "[bold]/knowledge[/bold]    show RAG stats; '/knowledge clear[ all]' to clear\n"
                 "[bold]/clear[/bold]        forget this conversation (keeps saved memory)\n"
                 "[bold]/help[/bold]         this help\n"
                 "[bold]exit[/bold]          quit\n\n"
@@ -250,6 +251,39 @@ def _handle_command(raw: str, session: "AgentSession", workspace: Path) -> None:
                 border_style="magenta",
             )
         )
+    elif name == "knowledge":
+        from core.config import project_id
+        from rag.store import KnowledgeBase
+
+        kb = KnowledgeBase.get()
+        sub = arg.split()
+        action = sub[0].lower() if sub else ""
+        try:
+            if action == "clear" and len(sub) > 1 and sub[1].lower() == "all":
+                n = kb.clear_all()
+                console.print(f"[green]Cleared the entire knowledge base ({n} chunk(s)).[/green]")
+            elif action == "clear":
+                n = kb.clear_project(project_id(workspace))
+                console.print(
+                    f"[green]Cleared {n} document chunk(s) for this project.[/green] "
+                    "[dim](global web cache kept — use '/knowledge clear all' to wipe everything)[/dim]"
+                )
+            else:
+                info = kb.info()
+                here = kb.count(project_id(workspace))
+                console.print(
+                    Panel(
+                        f"Total chunks: {info['total_chunks']}\n"
+                        f"This project:  {here}\n"
+                        f"Storage:       {info['storage_path']}\n\n"
+                        "[dim]/knowledge clear      — clear this project's documents\n"
+                        "/knowledge clear all  — wipe everything[/dim]",
+                        title="[cyan]Knowledge base[/cyan]",
+                        border_style="cyan",
+                    )
+                )
+        except Exception as e:
+            console.print(f"[yellow]Knowledge base unavailable: {e}[/yellow]")
     elif name == "clear":
         session.reset()
         console.print("[dim]Conversation cleared (saved project memory kept).[/dim]")
