@@ -1,5 +1,3 @@
-<complete file content here>
-```python
 """
 Tech Tools Module
 Provides utilities for checking versions, dependencies, and tech stack information.
@@ -244,5 +242,4 @@ if __name__ == "__main__":
     print(f"  Installed Version: {info['installed_version']}")
     print(f"  Should Update: {info['should_update']}")
     print(f"  Dependencies: {info['dependencies']}")
-```
 

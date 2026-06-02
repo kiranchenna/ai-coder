@@ -274,6 +274,33 @@ def build_tools(workspace: Path) -> list:
         return page
 
     @tool
+    def run_tests() -> str:
+        """Run the project's test suite to verify your changes actually work. Auto-detects the
+        test command (pytest, npm test, cargo test, go test, make test, etc.). Returns whether
+        tests passed or failed plus the output. Use this after editing code, and again after a
+        fix, to confirm the change is correct."""
+        from core.project import detect_test_command
+
+        detected = detect_test_command(workspace)
+        if detected is None:
+            return ("Could not auto-detect a test command for this project. If you know it, "
+                    "run it with run_shell (e.g. 'pytest -q' or 'npm test').")
+        command, label = detected
+        result = run_with_confirmation(command, cwd=workspace, timeout=300)
+        if result is None:
+            return "The user declined to run the tests."
+        stdout, stderr, code = result
+        out = (stdout or "")
+        if stderr:
+            out += "\n[stderr]\n" + stderr
+        out = out.strip()
+        # Failures/summaries land at the END of test output — keep the tail.
+        if len(out) > MAX_SHELL_OUTPUT:
+            out = "[... earlier output truncated ...]\n" + out[-MAX_SHELL_OUTPUT:]
+        status = "PASSED" if code == 0 else "FAILED"
+        return f"[{label}] tests {status} (exit code {code}).\n{out}"
+
+    @tool
     def read_document(path: str) -> str:
         """Read a document (PDF, Word .docx, Markdown, .txt, .rst, or HTML) from the project,
         extract its text, ingest it into the knowledge base for later recall, and return the
@@ -333,5 +360,5 @@ def build_tools(workspace: Path) -> list:
     return [
         list_files, find_files, search_code, read_file,
         write_file, edit_file, run_shell,
-        research, fetch_url, rag_search, read_document,
+        research, fetch_url, rag_search, read_document, run_tests,
     ]
