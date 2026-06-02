@@ -33,8 +33,7 @@ In the agent (default):
   exit / quit     Leave the session
 
 Flags:
-  --selftest      Check the model supports native tool calling, then exit
-  --legacy        Launch the old 7-phase pipeline REPL instead of the agent
+  --selftest      Check the model supports tool calling, then exit
         """,
     )
 
@@ -72,12 +71,7 @@ Flags:
     parser.add_argument(
         "--selftest",
         action="store_true",
-        help="Verify the configured model supports native tool calling, then exit",
-    )
-    parser.add_argument(
-        "--legacy",
-        action="store_true",
-        help="Launch the legacy 7-phase pipeline REPL instead of the agent",
+        help="Verify the configured model supports tool calling, then exit",
     )
 
     args = parser.parse_args()
@@ -99,8 +93,6 @@ Flags:
     if args.model:
         # Override model name in-memory for this session only
         cfg.raw()["model"]["name"] = args.model
-        from core.streaming import reset_llm
-        reset_llm()
 
     if args.shell_mode:
         cfg.raw()["shell"]["confirmation"] = args.shell_mode
@@ -121,13 +113,9 @@ Flags:
         from core.model import selftest
         sys.exit(0 if selftest() else 1)
 
-    # ── Launch ─────────────────────────────────────────────────────────────────
-    if args.legacy:
-        from core.repl import run_repl
-        run_repl(workspace=workspace)
-    else:
-        from agent.loop import run_agent_repl
-        run_agent_repl(workspace=workspace)
+    # ── Launch the agent ───────────────────────────────────────────────────────
+    from agent.loop import run_agent_repl
+    run_agent_repl(workspace=workspace)
 
 
 def _check_ollama(base_url: str, model_name: str) -> None:

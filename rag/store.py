@@ -1,9 +1,8 @@
 """
 rag/store.py — Vector knowledge base with chunking
 ===================================================
-A clean, agent-facing rewrite of the old core/knowledge.py: persistent
-ChromaDB store + Ollama embeddings, but with real text chunking (instead of a
-fixed 6k truncation) and per-item TTL.
+Persistent ChromaDB store + Ollama embeddings, with real overlapping text
+chunking and per-item TTL.
 
 This is what lets the agent "learn / stay current": researched web pages and
 documents are chunked, embedded, and retrieved semantically at query time —

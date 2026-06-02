@@ -58,8 +58,7 @@ aicoder                          # start the agent in the current directory
 aicoder                          # work in the current directory
 aicoder --workspace ./my-app     # point at another project
 aicoder --model qwen2.5-coder:7b # override the model for this session
-aicoder --selftest               # check native tool calling, then exit
-aicoder --legacy                 # launch the old 7-phase pipeline REPL (deprecated)
+aicoder --selftest               # check tool calling, then exit
 ```
 
 Inside the agent, just describe what you want:
@@ -191,7 +190,8 @@ pytest tests/ -v
 
 ## Architecture & status
 
-This is **AICoder v3** — an agentic rewrite. The legacy 7-phase planning pipeline (`/project`, `phases/`, `core/pipeline.py`) is still reachable via `aicoder --legacy` but is deprecated and partially broken; new work goes through the agent.
+This is **AICoder v3** — an agentic rewrite. The original 7-phase planning
+pipeline has been removed; everything now runs through the single agentic loop.
 
 ## License
 
