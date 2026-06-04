@@ -152,6 +152,9 @@ class AgentSession:
         self.tools += self.mcp.langchain_tools()
         self.tools_by_name = {t.name: t for t in self.tools}
         self.llm = get_chat_model(tools=self.tools)
+        from agent.hooks import HookRunner
+
+        self.hooks = HookRunner()
         self.instructions = _load_instructions(workspace)
         self.messages = [
             SystemMessage(
@@ -221,6 +224,7 @@ class AgentSession:
             text = content.strip()
             console.print()
             console.print(Markdown(text) if text else "[dim](no further response)[/dim]")
+            self.hooks.stop(self.workspace)
             return text
 
         console.print(
@@ -340,12 +344,25 @@ class AgentSession:
                 f"ERROR: unknown tool '{name}'. "
                 f"Available tools: {', '.join(self.tools_by_name)}."
             )
+
+        # PreToolUse hooks can block the call.
+        block = self.hooks.pre_tool_use(name, args, self.workspace)
+        if block is not None:
+            console.print(f"[yellow]⛔ {name} blocked by hook: {block}[/yellow]")
+            return f"BLOCKED by a PreToolUse hook: {block}"
+
         try:
             # StructuredTool validates args against the schema and raises on
             # bad input — surfaced back to the model so it can self-correct.
-            return str(tool.invoke(args))
+            result = str(tool.invoke(args))
         except Exception as e:  # noqa: BLE001 — report any tool failure to the model
-            return f"ERROR running {name}: {e}"
+            result = f"ERROR running {name}: {e}"
+
+        # PostToolUse hooks (auto-format, notify, …) may add a note.
+        note = self.hooks.post_tool_use(name, args, result, self.workspace)
+        if note:
+            result += f"\n[hook] {note}"
+        return result
 
 
 # ── REPL ───────────────────────────────────────────────────────────────────────

@@ -95,6 +95,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         #       args: ["-y", "@modelcontextprotocol/server-filesystem", "/path"]
         "servers": {},
     },
+    "hooks": {
+        # Optional shell commands run on agent events. Opt-in. Example:
+        #   PreToolUse:   [{matcher: "run_shell", command: "guard.sh"}]  # non-zero blocks
+        #   PostToolUse:  [{matcher: "write_file|edit_file", command: "ruff format ."}]
+        #   Stop:         [{command: "notify-send done"}]
+    },
 }
 
 

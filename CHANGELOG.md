@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- **Hooks** — run user shell commands on agent events (PreToolUse can block a
+  tool, PostToolUse to auto-format/notify, Stop on turn end). Opt-in via config.
+- **`find_symbol` + large-file paging** — a fast definitions index to jump to
+  where things are defined, and `read_file(offset, limit)` to page big files.
 - **MCP client support** — connect Model Context Protocol servers via
   `mcp.servers` in config; their tools are exposed to the agent alongside the
   built-ins. Opt-in (`pip install "ai-coder[mcp]"`).

@@ -165,6 +165,29 @@ in `/tools`. Opt-in — nothing runs unless you configure servers.
 
 ---
 
+## Hooks (optional)
+
+Run your own shell commands on agent events — guard or block tools, auto-format
+after edits, or get notified. Configured in `~/.aicoder/config.yaml`:
+
+```yaml
+hooks:
+  PreToolUse:                          # before a tool runs; non-zero exit BLOCKS it
+    - matcher: "run_shell"             # regex against the tool name (omit = all)
+      command: "my-guard.sh"
+  PostToolUse:                         # after a tool runs
+    - matcher: "write_file|edit_file"
+      command: "ruff format ."         # auto-format on every edit
+  Stop:                                # when a turn finishes
+    - command: "osascript -e 'display notification \"AICoder done\"'"
+```
+
+Each command gets a JSON payload on stdin and `AICODER_EVENT` / `AICODER_TOOL` /
+`AICODER_TOOL_ARGS` env vars. Hooks run arbitrary commands you configure — only
+add ones you trust.
+
+---
+
 ## Configuration
 
 Auto-created at `~/.aicoder/config.yaml` on first run:

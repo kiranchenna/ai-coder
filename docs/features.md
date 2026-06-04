@@ -156,6 +156,12 @@ keeps long sessions and large `plan` builds within the context window.
 - Durable categorized facts (decision/convention/fact/todo), idempotent add,
   auto-loaded into the system prompt at session start.
 
+### Hooks (`agent/hooks.py`)
+- Optional user shell commands on agent events, configured under `hooks` in
+  config: **PreToolUse** (non-zero exit blocks the tool), **PostToolUse**
+  (auto-format/notify), **Stop** (turn finished). Matched by a regex on the tool
+  name. Commands get a JSON payload on stdin + `AICODER_*` env vars. Opt-in.
+
 ### MCP servers (`agent/mcp_client.py`)
 - Optional [Model Context Protocol](https://modelcontextprotocol.io/) client.
   Configure stdio servers under `mcp.servers` in config; their tools are
