@@ -128,6 +128,30 @@ def test_locate_edit_not_found():
     assert res[0] is None and res[1] == "not_found"
 
 
+# ─── Project instructions (AICODER.md) ────────────────────────────────────────
+
+def test_load_instructions_reads_project_file(tmp_path, monkeypatch):
+    from agent.loop import _load_instructions
+    monkeypatch.setattr("core.config.AICODER_HOME", tmp_path / "home")  # no global file
+    (tmp_path / "AICODER.md").write_text("Always use type hints.\nPrefer pathlib.")
+    out = _load_instructions(tmp_path)
+    assert "Always use type hints." in out
+    assert "From AICODER.md" in out
+
+
+def test_load_instructions_absent_is_empty(tmp_path, monkeypatch):
+    from agent.loop import _load_instructions
+    monkeypatch.setattr("core.config.AICODER_HOME", tmp_path / "home")
+    assert _load_instructions(tmp_path) == ""
+
+
+def test_instructions_injected_into_system_prompt(tmp_path):
+    from agent.prompts import system_prompt
+    p = system_prompt(tmp_path, ["read_file"], project_instructions="Use 2-space indent.")
+    assert "Project instructions" in p
+    assert "Use 2-space indent." in p
+
+
 # ─── History compaction (context management) ──────────────────────────────────
 
 def _mk_session_with_history(messages, budget):

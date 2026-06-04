@@ -100,6 +100,25 @@ Inside the agent, just describe what you want:
 
 ---
 
+## Project instructions (`AICODER.md`)
+
+Drop an **`AICODER.md`** file in your project root with rules the agent should
+always follow — conventions, do's and don'ts, architecture notes. It's loaded
+into the agent's context every session and takes precedence over its defaults.
+
+```markdown
+# AICODER.md
+- Use snake_case and full type hints.
+- Tests live in tests/ and run with pytest.
+- Never edit anything under vendor/.
+- Prefer pathlib over os.path.
+```
+
+A global `~/.aicoder/AICODER.md` is also loaded (applies to every project), with
+the per-project file layered on top.
+
+---
+
 ## The agent's tools
 
 | Tool | Purpose |

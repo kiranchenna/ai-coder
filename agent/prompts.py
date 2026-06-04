@@ -13,6 +13,7 @@ def system_prompt(
     tool_names: list[str],
     repo_overview: str = "",
     project_memory: str = "",
+    project_instructions: str = "",
 ) -> str:
     """Build the agent's system prompt for a given workspace and toolset."""
     tools = ", ".join(tool_names)
@@ -65,6 +66,14 @@ PDF/Word/Markdown file describing what to build), read it with `read_document`
 
 If a tool returns an error, read it carefully and correct your approach rather
 than repeating the same call."""
+
+    if project_instructions:
+        base += (
+            "\n\n# Project instructions (authored by the user — follow these closely)\n"
+            + project_instructions
+            + "\n\nThese instructions take precedence over your general defaults when they "
+            "conflict."
+        )
 
     if project_memory:
         base += (

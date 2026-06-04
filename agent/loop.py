@@ -99,6 +99,46 @@ def _project_memory(workspace: Path) -> str:
         return ""
 
 
+# Project-instructions files, in load order (global first, then project).
+_INSTRUCTION_NAMES = ("AICODER.md", ".aicoder.md", ".aicoderrules")
+_INSTRUCTIONS_MAX_CHARS = 6_000
+
+
+def _load_instructions(workspace: Path) -> str:
+    """
+    Load user-authored project instructions (a CLAUDE.md-style file). Combines a
+    global ~/.aicoder/AICODER.md with the first instructions file found in the
+    workspace. Best-effort; returns "" if none.
+    """
+    from core.config import AICODER_HOME
+
+    parts: list[str] = []
+    try:
+        global_file = AICODER_HOME / "AICODER.md"
+        if global_file.is_file():
+            text = global_file.read_text(encoding="utf-8", errors="replace").strip()
+            if text:
+                parts.append("## Global instructions\n" + text)
+    except Exception:
+        pass
+
+    for name in _INSTRUCTION_NAMES:
+        try:
+            f = workspace / name
+            if f.is_file():
+                text = f.read_text(encoding="utf-8", errors="replace").strip()
+                if text:
+                    parts.append(f"## From {name}\n" + text)
+                break
+        except Exception:
+            continue
+
+    combined = "\n\n".join(parts)
+    if len(combined) > _INSTRUCTIONS_MAX_CHARS:
+        combined = combined[:_INSTRUCTIONS_MAX_CHARS] + "\n[... instructions truncated ...]"
+    return combined
+
+
 class AgentSession:
     """Holds conversation state and drives the tool-calling loop."""
 
@@ -107,6 +147,7 @@ class AgentSession:
         self.tools = build_tools(workspace)
         self.tools_by_name = {t.name: t for t in self.tools}
         self.llm = get_chat_model(tools=self.tools)
+        self.instructions = _load_instructions(workspace)
         self.messages = [
             SystemMessage(
                 content=system_prompt(
@@ -114,6 +155,7 @@ class AgentSession:
                     list(self.tools_by_name),
                     _repo_overview(workspace),
                     _project_memory(workspace),
+                    self.instructions,
                 )
             )
         ]
@@ -457,6 +499,8 @@ def run_agent_repl(workspace: Path) -> None:
         )
     )
 
+    if session.instructions:
+        console.print("[dim]📄 Loaded project instructions (AICODER.md).[/dim]")
     if planner.has_active_plan():
         console.print("[dim]An in-progress plan exists for this project — type 'resume' to continue it.[/dim]")
 

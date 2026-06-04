@@ -155,6 +155,12 @@ keeps long sessions and large `plan` builds within the context window.
 - Durable categorized facts (decision/convention/fact/todo), idempotent add,
   auto-loaded into the system prompt at session start.
 
+### Project instructions (`AICODER.md`)
+- A user-authored `AICODER.md` in the workspace root (and an optional global
+  `~/.aicoder/AICODER.md`) is loaded into the system prompt every session, so
+  the agent follows your conventions/rules. It takes precedence over defaults.
+  Also recognized: `.aicoder.md`, `.aicoderrules`.
+
 ### Workspace context (`core/context.py`)
 - Scans the tree (depth 3), detects languages, and injects a compact repo
   overview into the system prompt (no file-content dumps — the agent reads on
