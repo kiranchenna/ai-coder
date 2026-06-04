@@ -23,6 +23,7 @@ class PhaseSpec:
     research: bool = False   # research current versions/best-practices first
     kind: str = "discussion"  # "discussion" | "review"
     must_cover: tuple[str, ...] = ()  # senior checklist the model is forced to address
+    decompose: str = ""  # if set, design this phase one unit at a time (e.g. "entity")
 
 
 PHASES: list[PhaseSpec] = [
@@ -206,6 +207,17 @@ _MUST_COVER: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# Heavy phases are designed one unit at a time (list → detail each → assemble),
+# which a small model handles far better than producing it all in one shot.
+_DECOMPOSE: dict[str, str] = {
+    "data_model": "entity",
+    "api": "resource",
+    "architecture": "component",
+}
+
 import dataclasses as _dc  # noqa: E402
-PHASES = [_dc.replace(p, must_cover=_MUST_COVER.get(p.id, ())) for p in PHASES]
+PHASES = [
+    _dc.replace(p, must_cover=_MUST_COVER.get(p.id, ()), decompose=_DECOMPOSE.get(p.id, ""))
+    for p in PHASES
+]
 PHASES_BY_ID = {p.id: p for p in PHASES}

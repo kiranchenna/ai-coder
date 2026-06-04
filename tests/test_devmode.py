@@ -206,6 +206,36 @@ def test_summarize_reflection_does_draft_then_improve(tmp_path, monkeypatch):
     assert len(calls) == 2 and out == "IMPROVED"      # draft then refine
 
 
+def test_decomposed_summarize_designs_each_unit(tmp_path, monkeypatch):
+    # data_model decomposes by "entity": list → overview → detail each
+    seq = iter(['["User", "Message"]', 'OVERVIEW-TEXT', 'USER-DETAIL', 'MESSAGE-DETAIL'])
+    monkeypatch.setattr(S, "_stream", lambda msgs, precise=False: next(seq))
+    ds = DevSession(tmp_path, "x")
+    out = ds._summarize(PHASES_BY_ID["data_model"], [])
+    assert "## Overview" in out and "OVERVIEW-TEXT" in out
+    assert "## User" in out and "USER-DETAIL" in out
+    assert "## Message" in out and "MESSAGE-DETAIL" in out
+
+
+def test_decomposed_falls_back_when_no_items(tmp_path, monkeypatch):
+    from core.config import get_config
+    get_config().raw().setdefault("devmode", {})["reflect"] = False
+    # list step yields no array → fall through to the normal single-pass summarize
+    seq = iter(["no json here", "PLAIN-SUMMARY"])
+    monkeypatch.setattr(S, "_stream", lambda msgs, precise=False: next(seq))
+    ds = DevSession(tmp_path, "x")
+    out = ds._summarize(PHASES_BY_ID["data_model"], [])
+    get_config().raw()["devmode"]["reflect"] = True
+    assert out == "PLAIN-SUMMARY"
+
+
+def test_phases_have_decompose_set():
+    assert PHASES_BY_ID["data_model"].decompose == "entity"
+    assert PHASES_BY_ID["api"].decompose == "resource"
+    assert PHASES_BY_ID["architecture"].decompose == "component"
+    assert PHASES_BY_ID["requirements"].decompose == ""   # not decomposed
+
+
 def test_summarize_single_pass_when_reflection_off(tmp_path, monkeypatch):
     from core.config import get_config
     get_config().raw().setdefault("devmode", {})["reflect"] = False

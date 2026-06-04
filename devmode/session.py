@@ -285,8 +285,80 @@ class DevSession:
             transcript.append(f"**{spec.role}:** {ai}")
         # (unreachable) transcript joined by caller via _last_transcript
 
+    _UNIT_DETAIL = {
+        "entity": ("Design the **{item}** entity in full: every field with its type, the "
+                   "primary key, foreign keys, indexes, relationships to other entities, and "
+                   "constraints. If the project uses end-to-end encryption, store ciphertext "
+                   "(never plaintext). Use ### for any sub-headings. Output clean Markdown for just this entity."),
+        "resource": ("Design the **{item}** API in full: every endpoint (HTTP method + path), "
+                     "request and response shapes with field types, status codes, the error "
+                     "format, the auth required, and any realtime/websocket events. Output "
+                     "clean Markdown for just this resource."),
+        "component": ("Detail the **{item}** component in full: its responsibilities, the "
+                      "chosen technology and current stable version, its interfaces and "
+                      "dependencies on other components, the data it owns, and how it scales. "
+                      "Use ### for any sub-headings. Output clean Markdown for just this component."),
+    }
+    _UNIT_OVERVIEW = {
+        "entity": ("Write the data-model OVERVIEW: an entity-relationship summary, the global "
+                   "indexing strategy, and the migration approach."),
+        "resource": ("Write the API OVERVIEW: base URL/versioning, the single consistent error "
+                     "format, the auth scheme, the pagination convention, and the "
+                     "realtime/websocket event model."),
+        "component": ("Write the architecture OVERVIEW: the architecture style, how the "
+                      "components fit together (the request/message flow), the data stores and "
+                      "caches, and the cross-cutting concerns (the real-time backbone if "
+                      "applicable)."),
+    }
+
+    def _summarize_decomposed(self, spec: PhaseSpec, messages: list, unit: str) -> str | None:
+        """Design a heavy phase one unit at a time: list → detail each → assemble."""
+        import json
+        from core.model import balanced_json_arrays
+
+        list_prompt = (
+            f"Based on the requirements and this discussion, list the {unit}s to design for "
+            f"the {spec.title}. Output ONLY a JSON array of short names in a sensible "
+            f'dependency order, e.g. ["User", "Message"].'
+        )
+        raw = _stream(list(messages) + [HumanMessage(content=list_prompt)], precise=True)
+        items: list[str] = []
+        for span in balanced_json_arrays(raw):
+            try:
+                data = json.loads(span)
+            except Exception:
+                continue
+            if isinstance(data, list):
+                items = [str(x).strip() for x in data if isinstance(x, str) and x.strip()][:20]
+                if items:
+                    break
+        if not items:
+            return None  # fall back to the normal single-pass summarize
+
+        console.print(f"[dim]🔬 Designing {len(items)} {unit}(s) one at a time: "
+                      f"{', '.join(items)}[/dim]")
+        sections = []
+        overview = _stream(list(messages) + [HumanMessage(content=self._UNIT_OVERVIEW[unit])],
+                           precise=True).strip()
+        if overview:
+            sections.append(f"## Overview\n\n{overview}")
+        for item in items:
+            console.print(Rule(f"[dim]{unit}: {item}[/dim]"))
+            detail = _stream(
+                list(messages) + [HumanMessage(content=self._UNIT_DETAIL[unit].format(item=item))],
+                precise=True,
+            ).strip()
+            if detail:
+                sections.append(f"## {item}\n\n{detail}")
+        return "\n\n".join(sections) if sections else None
+
     def _summarize(self, spec: PhaseSpec, messages: list) -> str:
         from core.config import get_config
+
+        if spec.decompose:
+            decomposed = self._summarize_decomposed(spec, messages, spec.decompose)
+            if decomposed:
+                return decomposed   # decomposition is the quality mechanism here
 
         draft_prompt = (
             f"Summarize this {spec.title} discussion into a clean, structured Markdown "
