@@ -17,6 +17,7 @@
 - [Talking to the agent](#talking-to-the-agent)
 - [In-session commands](#in-session-commands)
 - [Multi-step builds (`plan` / `resume`)](#multi-step-builds-plan--resume)
+- [Developer Mode](#developer-mode)
 - [The tools](#the-tools)
 - [Verifying changes (tests, lint, type-check)](#verifying-changes)
 - [Git integration](#git-integration)
@@ -237,6 +238,70 @@ my-project> plan build a FastAPI todo service from docs/PRD.md
 AICoder decomposes the goal (grounded in any ingested document) into an ordered task list, then executes each task — reading/writing files and verifying as it goes — pausing for your confirmation between tasks.
 
 It's **resumable**: quit anytime, and next session type `resume` to continue from the first unfinished task. Plan state is saved under `~/.aicoder/memory/<project>/plan.json`.
+
+---
+
+## Developer Mode
+
+For building real applications with full control, **Developer Mode** runs a **role-driven SDLC** — it discusses each stage with you (as a different expert role), captures every decision as an editable file, and only then builds. You stay in control of the tech stack, schema, architecture, flows, screens, and the exact code structure.
+
+```
+my-project> develop a multi-tenant invoicing SaaS with Postgres and a React UI
+```
+
+### The phases
+
+It walks these phases, each a **full back-and-forth discussion** with a role persona — research-enabled phases pull current versions/best-practices from the web:
+
+| # | Phase | Role |
+|---|---|---|
+| 1 | Requirements | Requirements Analyst |
+| 2 | Architecture & Tech Stack | Software Architect |
+| 3 | Security & Non-Functional | Security/Platform Engineer |
+| 4 | Data Model & DB Schema | Database Architect |
+| 5 | API & Interface Contracts | Backend Engineer |
+| 6 | Application Flow & Business Logic | Domain Engineer |
+| 7 | UI/UX — Screens & Behaviour | Frontend/UX Engineer |
+| 8 | Testing Strategy | QA Engineer |
+| 9 | Deployment & Infrastructure | DevOps Engineer |
+| 10 | Coding Conventions | Tech Lead → writes `AICODER.md` |
+
+In each phase, type `done` to capture the decision, `skip` to skip, `revise` to restart, or `pause` to stop and resume later.
+
+### Artifacts you control
+
+Every decision is written to a file you can read, edit, and commit — these are the **source of truth** the build reads:
+
+```
+docs/dev/
+├── state.json            # phase progress (resumable)
+├── 01_requirements.md    # decision + discussion transcript
+├── 02_architecture.md
+├── … 04_data_model.md, 05_api.md, …
+└── build_plan.json       # the file/folder plan — edit it to control structure
+AICODER.md                # the coding conventions the build follows
+```
+
+### Build, revisit, resync
+
+```
+develop <idea>        # start (or resume) the design
+dev                   # resume the design
+dev status            # show phase progress
+dev build             # turn the design into code — proposes a file plan you can
+                      #   edit (build_plan.json), then generates file-by-file and verifies
+dev revisit <phase>   # re-open a decision; if it changes, auto-resync the code to match
+```
+
+- **`dev build`** proposes the folder/file structure from the design + your conventions. **Edit `docs/dev/build_plan.json`** (paths, order, naming) and re-run to use your exact structure. It then generates each file — grounded in the spec + `AICODER.md` — shown as a diff, **resumable per file**, and runs your tests at the end.
+- **`dev revisit <phase>`** lets you change any decision later. If the decision changed and code was built, AICoder **auto-resyncs**: it diffs old→new and runs an agentic task to propagate the change through the code, then verifies.
+
+### Greenfield and existing repos
+
+- **Greenfield:** you specify the conventions in the Conventions phase.
+- **Existing repo (brownfield):** every phase is grounded in your codebase, and the Conventions phase **infers your current conventions** from the code for you to confirm/adjust — so generated code matches your existing style.
+
+> Reality check: the structured phases, captured decisions, and your control compensate a lot, but a local 7B model is a strong *assistant* — review the generated code, and lean on the verify step. The design/decision artifacts are valuable on their own, regardless of model strength.
 
 ---
 
