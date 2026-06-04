@@ -320,7 +320,9 @@ A local 7B model doesn't know which parts of a domain are hard, and it writes a 
 - **Best-of-N** (`best_of`) — for the critical phases (requirements, security) it generates several candidate decisions from different angles and a judge keeps the strongest.
 - **Cross-phase consistency check** (`consistency_check`) — after each phase, its decision is checked against the earlier ones and contradictions are flagged (and logged to `docs/dev/consistency_notes.md`).
 - **Build self-review** (`build_review`) — every generated file is critiqued for bugs, placeholders, and convention misses, then fixed, before it's written.
+- **Build verify→fix loop** — after generation, a compile check → tests → agentic-fix loop (≤3 rounds) gets the code actually running, not just plausible-looking.
 - **`dev resolve`** — turns those contradictions into fixes: it rewrites the offending phase and auto-resyncs the code.
+- **Hybrid judging** (`judge_model`, opt-in) — point the *critic* steps (best-of judging, consistency, review) at a stronger model while generation stays local — the cheapest way to push past what a 7B can reason through.
 
 > Reality check: these levers measurably lift output (on a WhatsApp-clone design test the score rose from ~5.9 to ~8.2 / 10), but a local 7B is still a strong *assistant*, not an autonomous senior engineer — review the generated code, lean on the verify step, and use `dev resolve` / `dev revisit` to correct decisions. Subtle contradictions a 7B can't reason through may still slip past. The design/decision artifacts are valuable on their own, regardless of model strength.
 

@@ -124,7 +124,17 @@ files:
 
 knowledge:
   embedding_model: "nomic-embed-text-v2-moe"
+
+devmode:                       # Developer Mode quality levers
+  reflect: true                # draft → critique → revise each decision
+  best_of: true                # N candidates + judge for critical phases
+  consistency_check: true      # flag cross-phase contradictions
+  build_review: true           # self-review each generated file
+  judge_model: ""              # optional stronger model for critic steps ("" = main)
 ```
+
+The `devmode` levers trade extra model calls for quality on a small local model;
+see the README's "How it gets quality from a small model" for what each does.
 
 ---
 
@@ -176,6 +186,17 @@ checks tool calling (native or text-recovered) for the configured model.
     {"id": 2, "title": "Add endpoints", "description": "...", "status": "pending"}
   ]
 }
+```
+
+**Developer Mode artifacts** (in the workspace under `docs/dev/`):
+```
+docs/dev/
+├── state.json            # phase progress + cached consistency digests (resumable)
+├── NN_<phase>.md         # each decision + its discussion transcript
+├── consistency_notes.md  # cross-phase contradictions flagged during design
+├── build_plan.json       # the file plan (user-editable: paths, order, naming)
+└── build_manifest.json   # built file → the design phases it implements (provenance)
+AICODER.md                # the coding conventions the build follows
 ```
 
 **RAG store** — ChromaDB collection `aicoder_rag` at `~/.aicoder/rag/chroma/`;
