@@ -68,6 +68,38 @@ def test_resume_skips_completed(tmp_path, monkeypatch):
     assert "architecture" in ran                   # pending → run
 
 
+def test_run_phase_end_to_end_writes_artifact(tmp_path, monkeypatch):
+    # Exercise the REAL phase glue: _discuss → _summarize → _report_consistency
+    # → _write_artifact, with only the interactive prompt and the model stubbed.
+    from core.config import get_config
+    dm = get_config().raw()["devmode"]
+    saved = {k: dm.get(k) for k in ("best_of", "reflect", "consistency_check")}
+    dm.update(best_of=False, reflect=False, consistency_check=False)
+    try:
+        monkeypatch.setattr(S.Prompt, "ask", lambda *a, **k: "done")   # end discussion at once
+        monkeypatch.setattr(S.Confirm, "ask", lambda *a, **k: True)
+        monkeypatch.setattr(S, "_stream", lambda msgs, precise=False: "The captured DECISION.")
+        ds = DevSession(tmp_path, "a tiny CLI app")
+        result = ds._run_phase(PHASES_BY_ID["requirements"])
+        assert result == "done"
+        art = tmp_path / "docs" / "dev" / "03_requirements.md"
+        assert art.exists()
+        text = art.read_text()
+        assert "## Decision" in text and "The captured DECISION." in text  # summarized + written
+    finally:
+        dm.update(saved)
+
+
+def test_run_phase_review_routes_to_review(tmp_path, monkeypatch):
+    # The review-kind phase must take the _run_review path, not _discuss.
+    ds = DevSession(tmp_path, "x")
+    ds._write_artifact(PHASES_BY_ID["requirements"], "some decision", "t")
+    monkeypatch.setattr(S, "_stream", lambda msgs, precise=False: "HIGH — looks fine")
+    result = ds._run_phase(PHASES_BY_ID["review"])
+    assert result == "done"
+    assert (tmp_path / "docs" / "dev" / "design_review.md").exists()
+
+
 # ─── Build hand-off ───────────────────────────────────────────────────────────
 
 def test_parse_files_from_messy_output():
