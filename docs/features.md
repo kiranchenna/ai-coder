@@ -155,6 +155,13 @@ keeps long sessions and large `plan` builds within the context window.
 - Durable categorized facts (decision/convention/fact/todo), idempotent add,
   auto-loaded into the system prompt at session start.
 
+### MCP servers (`agent/mcp_client.py`)
+- Optional [Model Context Protocol](https://modelcontextprotocol.io/) client.
+  Configure stdio servers under `mcp.servers` in config; their tools are
+  discovered and exposed to the agent (prefixed `<server>__<tool>`) alongside
+  the built-ins. MCP sessions run on a background event loop bridged to the sync
+  agent loop. Requires `pip install "ai-coder[mcp]"`; opt-in.
+
 ### Project instructions (`AICODER.md`)
 - A user-authored `AICODER.md` in the workspace root (and an optional global
   `~/.aicoder/AICODER.md`) is loaded into the system prompt every session, so

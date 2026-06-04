@@ -85,6 +85,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # Set to "" to use the main chat model (no extra download needed).
         "embedding_model": "nomic-embed-text-v2-moe",
     },
+    "mcp": {
+        # Optional MCP (Model Context Protocol) servers. Their tools are exposed
+        # to the agent alongside the built-ins. Requires: pip install "ai-coder[mcp]".
+        # Example:
+        #   servers:
+        #     filesystem:
+        #       command: npx
+        #       args: ["-y", "@modelcontextprotocol/server-filesystem", "/path"]
+        "servers": {},
+    },
 }
 
 

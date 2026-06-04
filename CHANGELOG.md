@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+- **MCP client support** — connect Model Context Protocol servers via
+  `mcp.servers` in config; their tools are exposed to the agent alongside the
+  built-ins. Opt-in (`pip install "ai-coder[mcp]"`).
+- **`AICODER.md`** — a user-authored project-instructions file (plus optional
+  global `~/.aicoder/AICODER.md`) loaded into the agent's context every session.
+
 ## 3.0.0
 
 A complete rewrite into a single **agentic** coding assistant. The legacy

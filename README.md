@@ -124,14 +124,44 @@ the per-project file layered on top.
 | Tool | Purpose |
 |---|---|
 | `list_files`, `find_files`, `search_code` | Explore and search the repo |
-| `read_file`, `write_file`, `edit_file` | Read and modify code (with diff + confirmation) |
+| `read_file`, `write_file`, `edit_file` | Read and modify code (diff + confirmation; whitespace-tolerant edits) |
 | `run_shell` | Run commands (with confirmation) |
-| `run_tests` | Auto-detect and run the test suite |
+| `run_tests`, `run_checks` | Auto-detect and run the test suite / linters + type checkers |
 | `research`, `fetch_url`, `rag_search` | Web research + recall from the cached knowledge base |
 | `read_document` | Ingest a PRD/TDD (PDF/docx/md) into the knowledge base |
+| `git_status`, `git_diff`, `git_commit` | Review and commit changes |
 | `remember`, `recall` | Save and retrieve durable project facts |
 
+…plus any tools from configured **MCP servers** (see below).
+
 > Robustness: some local models emit tool calls as JSON text rather than via native tool calling — the agent loop recovers and executes those too.
+
+---
+
+## MCP servers (optional)
+
+Connect [MCP](https://modelcontextprotocol.io/) servers and their tools become
+available to the agent alongside the built-ins — a database, GitHub, a browser,
+your own server, anything that speaks the protocol.
+
+```bash
+pip install "ai-coder[mcp]"
+```
+
+```yaml
+# ~/.aicoder/config.yaml
+mcp:
+  servers:
+    filesystem:
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"]
+    sqlite:
+      command: uvx
+      args: ["mcp-server-sqlite", "--db-path", "./app.db"]
+```
+
+Each server's tools appear (prefixed by server name, e.g. `filesystem__read_file`)
+in `/tools`. Opt-in — nothing runs unless you configure servers.
 
 ---
 

@@ -145,6 +145,11 @@ class AgentSession:
     def __init__(self, workspace: Path):
         self.workspace = workspace
         self.tools = build_tools(workspace)
+        # Optional MCP server tools (no-op unless configured).
+        from agent.mcp_client import MCPManager
+
+        self.mcp = MCPManager.from_config()
+        self.tools += self.mcp.langchain_tools()
         self.tools_by_name = {t.name: t for t in self.tools}
         self.llm = get_chat_model(tools=self.tools)
         self.instructions = _load_instructions(workspace)
@@ -547,3 +552,5 @@ def run_agent_repl(workspace: Path) -> None:
         except Exception as e:  # noqa: BLE001 — keep the REPL alive on any failure
             console.print(f"\n[red]⚠ Error: {e}[/red]")
             console.print("[dim]If the model is unreachable, check that Ollama is running.[/dim]")
+
+    session.mcp.shutdown()

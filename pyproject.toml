@@ -61,6 +61,7 @@ include = ["core*", "tools*", "aicoder_cli*", "agent*", "rag*", "memory*"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+mcp = ["mcp>=1.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
