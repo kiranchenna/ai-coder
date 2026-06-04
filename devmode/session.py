@@ -127,7 +127,79 @@ class DevSession:
 
     # ── Discussion ─────────────────────────────────────────────────────────────
 
-    def _system_prompt(self, spec: PhaseSpec, context: str, research: str) -> str:
+    # ── Existing-codebase awareness (brownfield) ───────────────────────────────
+
+    _CODE_EXTS = {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java",
+                  ".rb", ".vue", ".php", ".cs", ".cpp", ".c", ".kt", ".swift"}
+    _SKIP_NAMES = {"AICODER.md", "README.md", "CHANGELOG.md", "LICENSE"}
+
+    def _iter_source_files(self):
+        from core.config import get_config
+        ignore = set(get_config().ignore_dirs)
+        for p in sorted(self.workspace.rglob("*")):
+            if not p.is_file() or any(part in ignore for part in p.parts):
+                continue
+            rel = p.relative_to(self.workspace)
+            if rel.parts[:2] == ("docs", "dev") or p.name in self._SKIP_NAMES:
+                continue
+            if p.suffix.lower() in self._CODE_EXTS:
+                yield p, rel
+
+    def _has_existing_code(self) -> bool:
+        return next(self._iter_source_files(), None) is not None
+
+    def _repo_overview(self) -> str:
+        if getattr(self, "_overview_cache", None) is None:
+            try:
+                from core.context import WorkspaceContext
+                self._overview_cache = WorkspaceContext(self.workspace).overview()
+            except Exception:
+                self._overview_cache = ""
+        return self._overview_cache
+
+    def _sample_code(self, max_files: int = 5, max_chars: int = 1200) -> str:
+        samples, n = [], 0
+        for p, rel in self._iter_source_files():
+            if n >= max_files:
+                break
+            try:
+                samples.append(f"=== {rel} ===\n" + p.read_text(encoding="utf-8", errors="replace")[:max_chars])
+                n += 1
+            except Exception:
+                continue
+        return "\n\n".join(samples)
+
+    def _relevant_docs(self) -> str:
+        try:
+            from core.config import project_id
+            from rag.store import KnowledgeBase
+            hits = KnowledgeBase.get().search(self.state.get("idea", ""), n=3,
+                                              max_distance=0.8, project=project_id(self.workspace))
+            return ("\n\n".join(h["content"] for h in hits))[:2000] if hits else ""
+        except Exception:
+            return ""
+
+    def _infer_conventions(self) -> str:
+        samples = self._sample_code()
+        if not samples.strip():
+            return ""
+        system = (
+            "You are a Tech Lead. Infer the project's EXISTING coding conventions from its "
+            "structure and sample files: folder layout, file naming, function/variable naming, "
+            "formatting, error-handling/logging patterns, docstring/comment style, and test "
+            "layout. Output a concise, concrete summary of the conventions already in use."
+        )
+        prompt = f"# Repo overview\n{self._repo_overview()}\n\n# Sample files\n{samples}\n\nInfer the conventions."
+        try:
+            from core.model import get_chat_model
+            ai = get_chat_model(precise=True).invoke(
+                [SystemMessage(content=system), HumanMessage(content=prompt)])
+            return ai.content if isinstance(ai.content, str) else str(ai.content)
+        except Exception:
+            return ""
+
+    def _system_prompt(self, spec: PhaseSpec, context: str, research: str,
+                       repo: str = "", docs: str = "", seed: str = "") -> str:
         parts = [
             f"You are a {spec.role} helping an experienced developer design a software "
             f"project, one SDLC phase at a time. This phase: {spec.title}.",
@@ -137,8 +209,14 @@ class DevSession:
             "ask focused questions only where you genuinely need the developer's decision, "
             "and adapt to their answers. Keep it tight — they are experienced.",
         ]
+        if repo:
+            parts += ["", "# Existing codebase — build on and MATCH this (brownfield)", repo]
+        if docs:
+            parts += ["", "# Relevant project documents (e.g. an imported PRD/spec)", docs]
         if context:
             parts += ["", "# Decisions already made in earlier phases", context]
+        if seed:
+            parts += ["", f"# Inferred starting point for {spec.title} (confirm or adjust)", seed]
         if research:
             parts += ["", "# Current information from the web (use for versions/best practices)", research]
         return "\n".join(parts)
@@ -157,7 +235,15 @@ class DevSession:
         if spec.research:
             console.print("[dim]🌐 Researching current best practices…[/dim]")
 
-        system = self._system_prompt(spec, context, research)
+        brownfield = self._has_existing_code()
+        repo = self._repo_overview() if brownfield else ""
+        docs = self._relevant_docs()
+        seed = ""
+        if spec.id == "conventions" and brownfield:
+            console.print("[dim]🔎 Inferring conventions from your existing code…[/dim]")
+            seed = self._infer_conventions()
+
+        system = self._system_prompt(spec, context, research, repo, docs, seed)
         opening = (f"Open the {spec.title} phase: give a concise first-draft proposal for "
                    f"{spec.focus}, then ask me the key questions you need answered.")
         messages = [SystemMessage(content=system), HumanMessage(content=opening)]

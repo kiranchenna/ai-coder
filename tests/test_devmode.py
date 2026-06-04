@@ -149,3 +149,35 @@ def test_revisit_no_resync_without_a_build(tmp_path, monkeypatch):
     monkeypatch.setattr("devmode.resync.resync", lambda *a: calls.update(hit=True))
     ds.revisit("requirements")                       # no build_plan.json → skip resync
     assert calls == {}
+
+
+# ─── Brownfield (existing-repo awareness) ─────────────────────────────────────
+
+def test_has_existing_code(tmp_path):
+    ds = DevSession(tmp_path, "x")
+    assert ds._has_existing_code() is False
+    (tmp_path / "app.py").write_text("def f():\n    pass\n")
+    assert ds._has_existing_code() is True
+
+
+def test_has_existing_code_ignores_design_and_docs(tmp_path):
+    ds = DevSession(tmp_path, "x")
+    (tmp_path / "docs" / "dev").mkdir(parents=True)
+    (tmp_path / "docs" / "dev" / "01_requirements.md").write_text("# x")
+    (tmp_path / "README.md").write_text("# readme")
+    assert ds._has_existing_code() is False          # docs/markdown don't count as code
+
+
+def test_sample_code_collects_sources(tmp_path):
+    ds = DevSession(tmp_path, "x")
+    (tmp_path / "a.py").write_text("print('hello-sample')")
+    s = ds._sample_code()
+    assert "a.py" in s and "hello-sample" in s
+
+
+def test_system_prompt_includes_brownfield_sections(tmp_path):
+    ds = DevSession(tmp_path, "x")
+    p = ds._system_prompt(PHASES_BY_ID["architecture"], "", "",
+                          repo="REPO-OVERVIEW", docs="DOC-X", seed="SEED-Y")
+    assert "Existing codebase" in p and "REPO-OVERVIEW" in p
+    assert "DOC-X" in p and "SEED-Y" in p

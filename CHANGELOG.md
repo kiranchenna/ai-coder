@@ -1,7 +1,7 @@
 # Changelog
 
 ## Unreleased
-- **Developer Mode** (in progress) — `develop <idea>` runs a role-driven SDLC
+- **Developer Mode** — `develop <idea>` runs a role-driven SDLC
   design: Requirements → Architecture → Security/NFR → Data model → API →
   App flow → UI/UX → Testing → Deployment → Conventions, each a full discussion
   that captures an editable artifact in `docs/dev/` (conventions → `AICODER.md`).
@@ -9,7 +9,9 @@
   design into code: proposes a file plan (you control it via build_plan.json),
   generates file-by-file grounded in the spec + conventions, and verifies.
   `dev revisit <phase>` re-opens a decision and, if it changed, auto-resyncs the
-  code (diffs old→new and runs an agentic apply+verify task).
+  code (diffs old→new and runs an agentic apply+verify task). Brownfield-aware:
+  for an existing repo it grounds every phase in the codebase and infers the
+  current coding conventions.
 - **Windows robustness** — cross-platform shell quoting for git commands
   (cmd.exe-safe), forward-slash path output from search/find/index, and
   `gradlew.bat` detection.
