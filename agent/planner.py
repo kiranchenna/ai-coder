@@ -13,7 +13,6 @@ State: ~/.aicoder/memory/<project_id>/plan.json  (resumable)
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 from langchain_core.messages import HumanMessage, SystemMessage

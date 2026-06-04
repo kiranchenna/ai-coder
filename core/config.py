@@ -6,7 +6,6 @@ Created automatically on first run with sensible defaults.
 """
 
 import hashlib
-import os
 import sys
 from pathlib import Path
 from typing import Any

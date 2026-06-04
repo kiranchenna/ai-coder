@@ -90,7 +90,7 @@ class Builder:
             "naming EXACTLY. Output ONLY a JSON array, no prose:\n"
             '[{"path": "relative/path/file.ext", "purpose": "what this file contains"}]'
         )
-        prompt = f"Design spec:\n{spec[:6000]}\n\nCoding conventions:\n{conv[:2000]}\n\nProduce the JSON file list."
+        prompt = f"Design spec:\n{spec[:24000]}\n\nCoding conventions:\n{conv[:3000]}\n\nProduce the JSON file list."
         try:
             ai = get_chat_model(precise=True).invoke(
                 [SystemMessage(content=system), HumanMessage(content=prompt)]
@@ -174,7 +174,7 @@ class Builder:
         prompt = (
             f"Project: {self.session.state.get('idea', '')}\n"
             f"Generate this file: {entry['path']}\nPurpose: {entry['purpose']}\n\n"
-            f"Design spec (relevant parts):\n{spec[:4000]}\n\n"
+            f"Design spec (relevant parts):\n{spec[:14000]}\n\n"
             f"Recently generated files (match their imports/style):\n{recent}\n\n"
             f"Output the complete content of {entry['path']} now."
         )

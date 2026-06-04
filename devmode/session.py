@@ -28,10 +28,17 @@ _STATUS_ICON = {"done": "✅", "skipped": "⏭", "in_progress": "🔄", "pending
 
 
 def _decision_section(text: str) -> str:
-    """Extract the '## Decision' body of an artifact (or the whole text)."""
+    """Extract the decision body of an artifact, ignoring volatile header lines."""
     import re
     m = re.search(r"## Decision\s*\n+(.*?)\n+---", text, re.DOTALL)
-    return m.group(1).strip() if m else text.strip()
+    if m:
+        return m.group(1).strip()
+    # Conventions/other format has no '## Decision' block: drop the leading title
+    # and the generated/decided timestamp line so the body compares stably across
+    # regenerations (otherwise the changing timestamp looks like a content change).
+    body = re.sub(r"(?m)\A#.*$\n?", "", text, count=1)
+    body = re.sub(r"(?m)^_(Decided|Generated)[^\n]*_\s*$\n?", "", body)
+    return body.strip()
 
 
 def _stream(messages, precise: bool = False) -> str:
@@ -101,11 +108,11 @@ class DevSession:
         return (self.workspace / spec.filename) if spec.target == "conventions" \
             else (self.dir / spec.filename)
 
-    def _prior_artifacts(self, exclude: str | None = None) -> str:
+    def _prior_artifacts(self) -> str:
         """Concatenate completed decision artifacts to ground later phases."""
         parts = []
         for p in PHASES:
-            if p.target != "doc" or p.kind == "review" or p.id == exclude:
+            if p.target != "doc" or p.kind == "review":
                 continue
             path = self.dir / p.filename
             if path.exists():
@@ -315,7 +322,6 @@ class DevSession:
             ai = _stream(messages)
             messages.append(AIMessage(content=ai))
             transcript.append(f"**{spec.role}:** {ai}")
-        # (unreachable) transcript joined by caller via _last_transcript
 
     _UNIT_DETAIL = {
         "entity": ("Design the **{item}** entity in full: every field with its type, the "
@@ -374,6 +380,7 @@ class DevSession:
                            precise=True).strip()
         if overview:
             sections.append(f"## Overview\n\n{overview}")
+        details = 0
         for item in items:
             console.print(Rule(f"[dim]{unit}: {item}[/dim]"))
             detail = _stream(
@@ -382,7 +389,14 @@ class DevSession:
             ).strip()
             if detail:
                 sections.append(f"## {item}\n\n{detail}")
-        return "\n\n".join(sections) if sections else None
+                details += 1
+        # If most units came back empty (a flaky weak model), don't ship an
+        # overview-only spec — fall back to a single-pass summary instead.
+        if details < max(1, len(items) // 2):
+            console.print("[yellow]Too many sub-units came back empty — falling back to a "
+                          "single-pass summary.[/yellow]")
+            return None
+        return "\n\n".join(sections)
 
     _ANGLES = (
         "Aim for the most rigorous, complete solution — cover every hard case and edge.",
@@ -420,12 +434,16 @@ class DevSession:
             f"- Ensure it fully covers: {spec.focus}, and is consistent with the requirements "
             f"and earlier decisions.\n"
             + ("".join(f"- It MUST explicitly cover: {item}\n" for item in spec.must_cover))
-            + f"Output ONLY the improved decision in clean Markdown — no preamble."
+            + "Output ONLY the improved decision in clean Markdown — no preamble."
         )
         improved = _stream(
             base + [AIMessage(content=draft), HumanMessage(content=improve_prompt)],
             precise=True,
         ).strip()
+        # Strip a conversational lead-in the model sometimes prepends.
+        import re
+        improved = re.sub(r"\A(here.{0,40}version|the improved decision|improved version)\s*:?\s*\n+",
+                          "", improved, flags=re.IGNORECASE)
         return improved or draft
 
     def _judge_best(self, spec: PhaseSpec, candidates: list[str]) -> str:
@@ -442,8 +460,8 @@ class DevSession:
         )
         raw = _stream([SystemMessage(content=system),
                        HumanMessage(content=f"{listing}\n\nBest candidate number:")], precise=True)
-        m = re.search(r"\d+", raw or "")
-        idx = (int(m.group()) - 1) if m else 0
+        m = re.search(r"candidate\s*(\d+)", raw or "", re.IGNORECASE) or re.search(r"(\d+)", raw or "")
+        idx = (int(m.group(1)) - 1) if m else 0
         if not (0 <= idx < len(candidates)):
             idx = 0
         console.print(f"[dim]  ✓ selected candidate {idx + 1} of {len(candidates)}[/dim]")
@@ -629,7 +647,6 @@ class DevSession:
         if spec.kind == "review":
             return self._run_review(spec)
         while True:  # retry loop for 'revise'
-            transcript_msgs: list = []
             result, messages = self._discuss(spec)
             if result in ("pause", "skip"):
                 return result
@@ -719,7 +736,7 @@ class DevSession:
                 continue
             if isinstance(data, list):
                 for f in data:
-                    if (isinstance(f, dict) and f.get("target") in PHASES_BY_ID
+                    if (isinstance(f, dict) and f.get("target") in ids
                             and f.get("issue") and f.get("fix")):
                         f["severity"] = str(f.get("severity", "MEDIUM")).upper()
                         findings.append(f)
@@ -819,14 +836,23 @@ class DevSession:
 
         old_path = self._artifact_path(spec)
         old = old_path.read_text(encoding="utf-8", errors="replace") if old_path.exists() else ""
+        old_status = self.state["phases"][spec.id]["status"]
 
         console.print(Rule(f"[bold]Revisiting: {spec.title}[/bold]"))
         self._set_status(spec.id, "in_progress")
         result = self._run_phase(spec)
-        self._set_status(spec.id, "done" if result == "done"
-                         else ("pending" if result == "pause" else "skipped"))
+        if result == "done":
+            self._set_status(spec.id, "done")
+        elif result == "pause":
+            self._set_status(spec.id, "pending")
+        else:  # 'skip' — don't downgrade a phase that was already completed
+            self._set_status(spec.id, old_status if old_status == "done" else "skipped")
         if result != "done":
             return
+
+        # A changed decision invalidates the cached consistency digest.
+        self.state.get("digests", {}).pop(spec.id, None)
+        self._save()
 
         new = old_path.read_text(encoding="utf-8", errors="replace") if old_path.exists() else ""
         if not old or not self._build_exists():
