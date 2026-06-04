@@ -88,6 +88,34 @@ def locate_edit(content: str, old: str) -> tuple[int, int, str] | tuple[None, st
     return None, "not_found"
 
 
+def _leading_ws(line: str) -> str:
+    return line[: len(line) - len(line.lstrip())]
+
+
+def _reindent_to_match(matched: str, new_string: str) -> str:
+    """
+    Re-base new_string's indentation to the matched region's actual indentation.
+    Used after a fuzzy (whitespace-insensitive) match so the model getting the
+    leading indentation wrong doesn't corrupt the file. Relative indentation
+    within new_string is preserved; a no-op when it already matches.
+    """
+    file_indent = _leading_ws(matched.split("\n", 1)[0])
+    lines = new_string.split("\n")
+    first_nonempty = next((l for l in lines if l.strip()), "")
+    new_base = _leading_ws(first_nonempty)
+    if new_base == file_indent:
+        return new_string
+    rebased = []
+    for l in lines:
+        if not l.strip():
+            rebased.append("")
+        elif l.startswith(new_base):
+            rebased.append(file_indent + l[len(new_base):])
+        else:
+            rebased.append(file_indent + l.lstrip())
+    return "\n".join(rebased)
+
+
 def _format_hits(hits: list[dict]) -> str:
     """Render knowledge-base search results as sourced, separated blocks."""
     return "\n\n---\n\n".join(
@@ -233,7 +261,10 @@ def build_tools(workspace: Path) -> list:
                     "copy the exact text you want to replace.")
 
         start, end, how = located
-        updated = original[:start] + new_string + original[end:]
+        # On a fuzzy match, re-base the replacement to the file's real indentation
+        # so a model that mis-indents old/new_string can't corrupt the file.
+        applied = _reindent_to_match(original[start:end], new_string) if how == "fuzzy" else new_string
+        updated = original[:start] + applied + original[end:]
         result = _apply_write(workspace, path, updated, existing=original)
         if how == "fuzzy" and not result.startswith("ERROR") and not result.startswith("User declined"):
             result += " (matched ignoring whitespace)"

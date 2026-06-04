@@ -128,6 +128,30 @@ def test_locate_edit_not_found():
     assert res[0] is None and res[1] == "not_found"
 
 
+def test_reindent_to_match_single_line():
+    from agent.tools import _reindent_to_match
+    # file line is indented 4; model's new_string has no indent → re-indented
+    assert _reindent_to_match("    return 1", "return 2") == "    return 2"
+
+
+def test_reindent_to_match_preserves_relative_indent():
+    from agent.tools import _reindent_to_match
+    # block at 4-space in the file; model wrote it at column 0 → shift whole block
+    out = _reindent_to_match("    def f():", "def f():\n    return 1")
+    assert out == "    def f():\n        return 1"
+
+
+def test_edit_file_fuzzy_preserves_indentation(tmp_path):
+    from agent.tools import build_tools
+    from core.config import get_config
+    get_config().raw()["files"]["confirmation"] = "never"
+    (tmp_path / "m.py").write_text("def f():\n    return 1\n")
+    tools = {t.name: t for t in build_tools(tmp_path)}
+    # model supplies old/new WITHOUT the file's 4-space indent (a common 7B error)
+    tools["edit_file"].invoke({"path": "m.py", "old_string": "return 1", "new_string": "return 2"})
+    assert (tmp_path / "m.py").read_text() == "def f():\n    return 2\n"
+
+
 # ─── Cross-platform shell quoting ─────────────────────────────────────────────
 
 def test_shell_quote_posix(monkeypatch):
