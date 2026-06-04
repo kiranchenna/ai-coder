@@ -52,6 +52,7 @@ It's deliberately **100% local and offline**. That means privacy and zero cost, 
 ## Key features
 
 - 🤖 **Agentic loop** — the model calls tools to get work done, with live token streaming.
+- 🏗 **Developer Mode** — a role-driven SDLC: design an app through 14 expert-role phases (captured as editable files), then build it — with quality levers that lift a small local model's output ([details](#developer-mode)).
 - 🛠 **Works on any repo** — build new code, modify existing code, add features, fix bugs.
 - 🔎 **Code intelligence** — jump to definitions (`find_symbol`), search contents, page through large files.
 - ✅ **Verifies its own work** — auto-detects and runs your tests, linters, and type checkers.
@@ -307,7 +308,20 @@ dev resolve           # cross-phase review → fix the design contradictions →
 - **Greenfield:** you specify the conventions in the Conventions phase.
 - **Existing repo (brownfield):** every phase is grounded in your codebase, and the Conventions phase **infers your current conventions** from the code for you to confirm/adjust — so generated code matches your existing style.
 
-> Reality check: the structured phases, captured decisions, and your control compensate a lot, but a local 7B model is a strong *assistant* — review the generated code, and lean on the verify step. The design/decision artifacts are valuable on their own, regardless of model strength.
+### How it gets quality from a small model
+
+A local 7B model doesn't know which parts of a domain are hard, and it writes a weak first draft. Developer Mode compensates with **engineering, not a bigger model** — each lever below is independently toggleable in config:
+
+- **Must-cover checklists** — each phase carries a senior checklist the model is *forced* to address (e.g. Security must name the actual E2E protocol and per-device keys; Architecture must name the real-time backbone), so it can't skip the defining decisions.
+- **Reflection** (`reflect`) — every decision is drafted, then critiqued and revised in a second pass; a small model improves a concrete draft far better than it writes a perfect one first try.
+- **Decomposition** — the heavy phases (data model, API, architecture) are designed **one unit at a time** (list → detail each entity/endpoint/component → assemble), which a small model handles far better than one giant answer.
+- **Targeted research** — research phases derive 2–3 *specific* web queries (current versions, protocols, pitfalls) instead of one generic search, putting real current facts in context.
+- **Best-of-N** (`best_of`) — for the critical phases (requirements, security) it generates several candidate decisions from different angles and a judge keeps the strongest.
+- **Cross-phase consistency check** (`consistency_check`) — after each phase, its decision is checked against the earlier ones and contradictions are flagged (and logged to `docs/dev/consistency_notes.md`).
+- **Build self-review** (`build_review`) — every generated file is critiqued for bugs, placeholders, and convention misses, then fixed, before it's written.
+- **`dev resolve`** — turns those contradictions into fixes: it rewrites the offending phase and auto-resyncs the code.
+
+> Reality check: these levers measurably lift output (on a WhatsApp-clone design test the score rose from ~5.9 to ~8.2 / 10), but a local 7B is still a strong *assistant*, not an autonomous senior engineer — review the generated code, lean on the verify step, and use `dev resolve` / `dev revisit` to correct decisions. Subtle contradictions a 7B can't reason through may still slip past. The design/decision artifacts are valuable on their own, regardless of model strength.
 
 ---
 
@@ -508,6 +522,12 @@ mcp:
   servers: {}                     # see "MCP servers"
 
 hooks: {}                         # see "Hooks"
+
+devmode:                          # Developer Mode quality levers (see "How it gets quality")
+  reflect: true                   # draft → critique → revise each decision
+  best_of: true                   # generate N candidates for critical phases, judge the best
+  consistency_check: true         # flag cross-phase contradictions as each phase lands
+  build_review: true              # self-review each generated file before writing it
 ```
 
 - A `.aicoderignore` file (gitignore syntax) in your workspace further excludes files from scanning.
@@ -570,6 +590,11 @@ ai-coder/
 │   ├── prompts.py          # system prompt
 │   ├── mcp_client.py       # MCP client (external tool servers)
 │   └── hooks.py            # lifecycle hooks
+├── devmode/                # Developer Mode: role-driven SDLC design → build
+│   ├── phases.py           # the 14 phases + quality-lever config (must-cover/decompose/best-of)
+│   ├── session.py          # engine: discuss → summarize → consistency → resolve
+│   ├── build.py            # file-plan + per-file generation with self-review
+│   └── resync.py           # propagate a changed decision into the code
 ├── rag/
 │   ├── store.py            # ChromaDB vector store with chunking
 │   ├── ingest.py           # PDF/docx/md/html document loaders

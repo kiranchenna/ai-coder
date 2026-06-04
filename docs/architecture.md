@@ -19,17 +19,27 @@ ai-coder/
 ├── core/                       # Shared core
 │   ├── config.py               # Configuration (~/.aicoder/config.yaml)
 │   ├── context.py              # Workspace scanner / repo overview
+│   ├── code_index.py           # ctags-style symbol index (find_symbol)
 │   ├── model.py                # ChatOllama factory + tool-call recovery + selftest
-│   └── project.py              # Test-command detection
+│   └── project.py              # Test- & lint-command detection
 │
 ├── agent/                      # The agentic core
 │   ├── loop.py                 # Tool-calling loop, REPL, slash commands
-│   ├── tools.py                # The 14 agent tools
+│   ├── tools.py                # The 19 agent tools
 │   ├── planner.py              # Decompose + run resumable task plans
+│   ├── hooks.py                # Lifecycle hooks (Pre/PostToolUse, Stop)
+│   ├── mcp_client.py           # MCP stdio client (optional)
 │   └── prompts.py              # System prompt
+│
+├── devmode/                    # Developer Mode: role-driven SDLC design → build
+│   ├── phases.py               # PhaseSpec data: 14 phases + must-cover/decompose/best-of
+│   ├── session.py              # Engine: discuss → summarize → consistency → resolve
+│   ├── build.py                # File-plan + per-file generation with self-review
+│   └── resync.py               # Propagate a changed decision into the code
 │
 ├── rag/                        # Retrieval-augmented knowledge
 │   ├── store.py                # ChromaDB vector store with chunking + TTL
+│   ├── research.py             # Web research → cached knowledge
 │   └── ingest.py               # PDF/docx/md/html document loaders
 │
 ├── memory/                     # Persistent per-project memory
@@ -42,8 +52,9 @@ ai-coder/
 │
 └── tests/                      # pytest unit tests
     ├── test_agent.py           # Agent logic (parsers, chunking, detection, memory)
-    ├── test_config.py
-    └── test_file_tools.py
+    ├── test_devmode.py         # Developer Mode engine, build, resync, resolve, levers
+    ├── test_loop.py            # Agent-loop integration
+    ├── test_hooks.py · test_mcp.py · test_config.py · test_file_tools.py
 ```
 
 Runtime data lives under `~/.aicoder/` (config, RAG store, per-project memory),

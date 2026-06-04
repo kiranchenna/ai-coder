@@ -59,6 +59,8 @@ commands are handled by the REPL (`agent/loop.py`):
 
 | Command | Description |
 |---|---|
+| `develop <idea>` | Developer Mode: role-driven SDLC design → build (see below) |
+| `dev …` | `dev` (resume) · `dev status` · `dev build` · `dev revisit <phase>` · `dev resolve` |
 | `plan <goal>` | Decompose a goal into an ordered, resumable task list and build it |
 | `resume` | Continue an in-progress plan |
 | `/model [name]` | Show or switch the model for this session |
@@ -105,6 +107,49 @@ keeps long sessions and large `plan` builds within the context window.
 - Executes each task through the agent, saving status after every step, and
   pausing for confirmation between tasks.
 - **Resumable** — quit anytime; `resume` continues from the first pending task.
+
+---
+
+## Developer Mode (`devmode/`)
+
+A role-driven SDLC flow for building real applications with full control. The
+engine (`devmode/session.py`) is **data-driven**: each phase is a `PhaseSpec`
+(`devmode/phases.py`) with a role, a focus, an output artifact, and optional
+flags. The same discussion loop runs for every phase except the review-kind one.
+
+- **14 phases** — Product Vision → Market & Competitors → Requirements →
+  Architecture → Security/NFR → Data Model → API → App Flow → UI/UX → Testing →
+  Deployment → Documentation → Conventions (writes `AICODER.md`) → Design Review.
+- **Artifacts** (`docs/dev/*.md` + `state.json`) are the resumable source of
+  truth the build reads; conventions go to `AICODER.md`.
+- **Brownfield-aware** — for an existing repo every phase is grounded in the
+  codebase and the Conventions phase infers your current style.
+- **`dev build`** (`devmode/build.py`) — proposes a file plan
+  (`docs/dev/build_plan.json`, user-editable), then generates each file grounded
+  in the spec + conventions, resumable per file, and verifies.
+- **`dev revisit <phase>`** / **`dev resolve`** — change a decision, or
+  review→fix cross-phase contradictions; both **auto-resync** the code
+  (`devmode/resync.py`) via an agentic diff→apply→verify task.
+
+### Quality levers (driving a small local model)
+
+Each is independently toggleable under the `devmode` config key:
+
+| Lever | Where | Config |
+|---|---|---|
+| Must-cover checklists | `phases._MUST_COVER` — forces domain-defining decisions | — |
+| Reflection (draft→critique→revise) | `session._one_decision` | `reflect` |
+| Decomposition (list→detail-each→assemble) | `session._summarize_decomposed` (`_DECOMPOSE`) | — |
+| Targeted multi-query research | `session._research_queries` / `_research` | — |
+| Best-of-N + judge | `session._summarize` / `_judge_best` (`_BEST_OF`) | `best_of` |
+| Cross-phase consistency check | `session._report_consistency` (digest-based) | `consistency_check` |
+| Build self-review | `build._review_file` | `build_review` |
+| Resolve (fix + resync) | `session.resolve` / `_apply_fix` | — |
+
+Measured effect: on a WhatsApp-clone design test the per-phase score rose from
+~5.9 to ~8.2 / 10. The honest ceiling: subtle semantic contradictions a 7B can't
+reason through (e.g. a private key stored server-side that the artifact
+rationalizes as "encrypted at rest") may still pass — review the output.
 
 ---
 
