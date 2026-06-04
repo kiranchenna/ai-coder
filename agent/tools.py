@@ -25,6 +25,7 @@ console = Console()
 
 MAX_READ_CHARS = 20_000
 MAX_SHELL_OUTPUT = 6_000
+READ_DEFAULT_LINES = 500
 
 
 def locate_edit(content: str, old: str) -> tuple[int, int, str] | tuple[None, str]:
@@ -160,19 +161,38 @@ def build_tools(workspace: Path) -> list:
         return f"{path.rstrip('/')}/\n{tree}" if tree else f"(empty directory: {path})"
 
     @tool
-    def read_file(path: str) -> str:
-        """Read and return the full text of a file (relative to the project root).
-        Always read a file with this tool before editing it."""
+    def read_file(path: str, offset: int = 1, limit: int = 0) -> str:
+        """Read a file's text (relative to the project root). Always read a file before
+        editing it. For LARGE files, page through them: `offset` is the 1-based start line and
+        `limit` is the number of lines to read (0 = to the end, or a default window if the file
+        is large). The returned text is raw (no line numbers), so it can be copied into
+        edit_file directly."""
         try:
             content = ft.read_file(workspace, path)
         except (FileNotFoundError, IsADirectoryError, PermissionError) as e:
             return f"ERROR: {e}"
-        if len(content) > MAX_READ_CHARS:
-            return (
-                content[:MAX_READ_CHARS]
-                + f"\n\n[... truncated — file is {len(content)} chars total ...]"
-            )
-        return content
+
+        lines = content.split("\n")
+        total = len(lines)
+        start = max(1, offset)
+        if start > total:
+            return f"ERROR: offset {start} is past the end of the file ({total} lines)."
+        if limit and limit > 0:
+            end = min(total, start + limit - 1)
+        elif start == 1 and total > READ_DEFAULT_LINES:
+            end = READ_DEFAULT_LINES            # large file, no range → first window
+        else:
+            end = total
+
+        body = "\n".join(lines[start - 1:end])
+        if len(body) > MAX_READ_CHARS:
+            return (body[:MAX_READ_CHARS]
+                    + f"\n[... truncated at {MAX_READ_CHARS} chars; narrow with offset/limit ...]")
+        if end < total:
+            body += f"\n[showing lines {start}-{end} of {total}; read more with offset/limit]"
+        elif start > 1:
+            body += f"\n[showing lines {start}-{total} of {total}]"
+        return body
 
     @tool
     def write_file(path: str, content: str) -> str:
@@ -227,6 +247,33 @@ def build_tools(workspace: Path) -> list:
         if len(results) >= 40:
             out += "\n[... more matches — refine your query to narrow it down ...]"
         return out
+
+    @tool
+    def find_symbol(name: str) -> str:
+        """Find where a function / class / type / symbol is DEFINED across the project, using a
+        fast definitions index. Returns 'kind name — file:line' for each definition. Use this to
+        jump straight to a definition instead of grepping. Matches the exact name first, then
+        falls back to a substring match."""
+        from core.code_index import build_symbol_index
+        from core.config import get_config
+
+        index = build_symbol_index(workspace, set(get_config().ignore_dirs))
+        exact = index.get(name)
+        if exact:
+            return "\n".join(f"{h['kind']} {name} — {h['file']}:{h['line']}" for h in exact)
+
+        q = name.lower()
+        fuzzy = [
+            f"{h['kind']} {sym} — {h['file']}:{h['line']}"
+            for sym, locs in sorted(index.items())
+            if q in sym.lower()
+            for h in locs
+        ]
+        if not fuzzy:
+            return f"No symbol matching '{name}' found in the index."
+        if len(fuzzy) > 40:
+            fuzzy = fuzzy[:40] + ["[... more; refine the name ...]"]
+        return "\n".join(fuzzy)
 
     @tool
     def find_files(name_pattern: str, path: str = ".") -> str:
@@ -498,7 +545,7 @@ def build_tools(workspace: Path) -> list:
         return _format_hits(results)
 
     return [
-        list_files, find_files, search_code, read_file,
+        list_files, find_files, find_symbol, search_code, read_file,
         write_file, edit_file, run_shell,
         research, fetch_url, rag_search, read_document, run_tests, run_checks,
         git_status, git_diff, git_commit,

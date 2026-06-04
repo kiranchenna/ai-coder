@@ -17,8 +17,9 @@ paths are sandboxed to the workspace.
 |---|---|
 | `list_files(path=".")` | List files/directories as a tree |
 | `find_files(name_pattern, path=".")` | Find files by name glob (`*.py`, `*config*`) |
+| `find_symbol(name)` | Jump to where a function/class/type is **defined** (symbol index) |
 | `search_code(query, path=".")` | Grep file contents (`file:line: text`) |
-| `read_file(path)` | Read a file's full text |
+| `read_file(path, offset, limit)` | Read a file; page large files by line range |
 
 ### Editing & execution
 | Tool | Description |

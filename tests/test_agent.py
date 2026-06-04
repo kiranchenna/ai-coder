@@ -128,6 +128,46 @@ def test_locate_edit_not_found():
     assert res[0] is None and res[1] == "not_found"
 
 
+# ─── Code index (find_symbol) ─────────────────────────────────────────────────
+
+def test_build_symbol_index_python_and_js(tmp_path):
+    from core.code_index import build_symbol_index
+    (tmp_path / "a.py").write_text("import os\n\n\nclass Foo:\n    def bar(self):\n        pass\n")
+    (tmp_path / "b.js").write_text("export function greet() {}\nconst add = (a, b) => a + b\n")
+    idx = build_symbol_index(tmp_path)
+    assert idx["Foo"][0] == {"file": "a.py", "line": 4, "kind": "class"}
+    assert idx["bar"][0]["kind"] == "function" and idx["bar"][0]["line"] == 5
+    assert idx["greet"][0]["kind"] == "function"
+    assert idx["add"][0]["kind"] == "function"  # arrow function
+
+
+def test_build_symbol_index_respects_ignore(tmp_path):
+    from core.code_index import build_symbol_index
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "x.js").write_text("function leaked() {}\n")
+    idx = build_symbol_index(tmp_path, ignore_dirs={"node_modules"})
+    assert "leaked" not in idx
+
+
+# ─── Large-file paging (read_file offset/limit) ───────────────────────────────
+
+def test_read_file_paging(tmp_path):
+    from agent.tools import build_tools
+    big = "\n".join(f"line {i}" for i in range(1, 1201))   # 1200 lines
+    (tmp_path / "big.txt").write_text(big)
+    tools = {t.name: t for t in build_tools(tmp_path)}
+
+    # default window on a large file
+    first = tools["read_file"].invoke({"path": "big.txt"})
+    assert first.startswith("line 1\n")
+    assert "showing lines 1-500 of 1200" in first
+
+    # explicit window
+    mid = tools["read_file"].invoke({"path": "big.txt", "offset": 600, "limit": 3})
+    assert "line 600\nline 601\nline 602" in mid
+    assert "showing lines 600-602 of 1200" in mid
+
+
 # ─── Project instructions (AICODER.md) ────────────────────────────────────────
 
 def test_load_instructions_reads_project_file(tmp_path, monkeypatch):

@@ -123,8 +123,8 @@ the per-project file layered on top.
 
 | Tool | Purpose |
 |---|---|
-| `list_files`, `find_files`, `search_code` | Explore and search the repo |
-| `read_file`, `write_file`, `edit_file` | Read and modify code (diff + confirmation; whitespace-tolerant edits) |
+| `list_files`, `find_files`, `find_symbol`, `search_code` | Explore the repo, jump to definitions, grep |
+| `read_file`, `write_file`, `edit_file` | Read (paged for large files) and modify code (diff + confirmation; whitespace-tolerant edits) |
 | `run_shell` | Run commands (with confirmation) |
 | `run_tests`, `run_checks` | Auto-detect and run the test suite / linters + type checkers |
 | `research`, `fetch_url`, `rag_search` | Web research + recall from the cached knowledge base |
