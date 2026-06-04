@@ -112,6 +112,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # contradictions (e.g. a schema that violates the security model) and
         # surface them immediately instead of waiting for the final review.
         "consistency_check": True,
+        # For critical phases, generate several candidate decisions and let a
+        # judge pick the strongest (more calls, better worst-case quality).
+        "best_of": True,
     },
 }
 

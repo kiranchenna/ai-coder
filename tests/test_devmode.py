@@ -235,13 +235,53 @@ def test_new_roles_and_review_phase_present():
 def test_summarize_reflection_does_draft_then_improve(tmp_path, monkeypatch):
     from core.config import get_config
     get_config().raw().setdefault("devmode", {})["reflect"] = True
+    get_config().raw()["devmode"]["best_of"] = False   # isolate the reflection path
     calls = []
     monkeypatch.setattr(S, "_stream",
                         lambda msgs, precise=False: (calls.append(1),
                                                      "DRAFT" if len(calls) == 1 else "IMPROVED")[1])
     ds = DevSession(tmp_path, "x")
     out = ds._summarize(PHASES_BY_ID["requirements"], [])
+    get_config().raw()["devmode"]["best_of"] = True
     assert len(calls) == 2 and out == "IMPROVED"      # draft then refine
+
+
+def test_best_of_generates_candidates_and_judges(tmp_path, monkeypatch):
+    from core.config import get_config
+    get_config().raw()["devmode"]["best_of"] = True
+    get_config().raw()["devmode"]["reflect"] = False   # one call per candidate
+    # security has best_of=3 → 3 candidate calls, then 1 judge call picking #2
+    seq = iter(["CANDIDATE-1", "CANDIDATE-2", "CANDIDATE-3", "the best is 2"])
+    monkeypatch.setattr(S, "_stream", lambda msgs, precise=False: next(seq))
+    ds = DevSession(tmp_path, "x")
+    out = ds._summarize(PHASES_BY_ID["security"], [])
+    get_config().raw()["devmode"]["reflect"] = True
+    assert out == "CANDIDATE-2"                         # judge chose candidate 2
+
+
+def test_best_of_disabled_is_single_pass(tmp_path, monkeypatch):
+    from core.config import get_config
+    get_config().raw()["devmode"]["best_of"] = False
+    get_config().raw()["devmode"]["reflect"] = False
+    calls = []
+    monkeypatch.setattr(S, "_stream", lambda msgs, precise=False: (calls.append(1), "ONE")[1])
+    ds = DevSession(tmp_path, "x")
+    out = ds._summarize(PHASES_BY_ID["security"], [])
+    get_config().raw()["devmode"]["reflect"] = True
+    assert out == "ONE" and len(calls) == 1            # disabled → no candidates, no judge
+
+
+def test_judge_best_defaults_to_first_on_unparsable(tmp_path, monkeypatch):
+    monkeypatch.setattr(S, "_stream", lambda msgs, precise=False: "I cannot decide")
+    ds = DevSession(tmp_path, "x")
+    out = ds._judge_best(PHASES_BY_ID["security"], ["A", "B", "C"])
+    assert out == "A"                                  # no number → safe fallback to first
+
+
+def test_phases_have_best_of_set():
+    assert PHASES_BY_ID["security"].best_of == 3
+    assert PHASES_BY_ID["requirements"].best_of == 3
+    assert PHASES_BY_ID["app_flow"].best_of == 1       # non-critical → single pass
 
 
 def test_decomposed_summarize_designs_each_unit(tmp_path, monkeypatch):

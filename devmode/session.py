@@ -384,19 +384,22 @@ class DevSession:
                 sections.append(f"## {item}\n\n{detail}")
         return "\n\n".join(sections) if sections else None
 
-    def _summarize(self, spec: PhaseSpec, messages: list) -> str:
-        from core.config import get_config
+    _ANGLES = (
+        "Aim for the most rigorous, complete solution — cover every hard case and edge.",
+        "Aim for a pragmatic solution that is realistic to actually build and ship.",
+        "Aim for the most robust and secure solution — prioritise correctness and data protection.",
+    )
 
-        if spec.decompose:
-            decomposed = self._summarize_decomposed(spec, messages, spec.decompose)
-            if decomposed:
-                return decomposed   # decomposition is the quality mechanism here
+    def _one_decision(self, spec: PhaseSpec, messages: list, angle: str = "") -> str:
+        """Produce one decision: a draft, then (optionally) one critique-and-revise pass."""
+        from core.config import get_config
 
         draft_prompt = (
             f"Summarize this {spec.title} discussion into a clean, structured Markdown "
             f"record of the DECISIONS made about: {spec.focus}. Use headings, bullets, and "
             f"tables where useful. This is the permanent spec for this phase — be precise "
             f"and complete, no fluff."
+            + (f"\nEmphasis for this version: {angle}" if angle else "")
         )
         base = list(messages) + [HumanMessage(content=draft_prompt)]
         draft = _stream(base, precise=True).strip()
@@ -424,6 +427,51 @@ class DevSession:
             precise=True,
         ).strip()
         return improved or draft
+
+    def _judge_best(self, spec: PhaseSpec, candidates: list[str]) -> str:
+        """Pick the strongest of several candidate decisions for a phase."""
+        import re
+        listing = "\n\n".join(f"### Candidate {i + 1}\n{c[:3500]}" for i, c in enumerate(candidates))
+        must = "".join(f"- {m}\n" for m in spec.must_cover)
+        system = (
+            f"You are a senior {spec.role}. Several candidate {spec.title} decisions are below. "
+            f"Pick the SINGLE best one — the most complete, correct, specific, and consistent, "
+            f"that best decides {spec.focus}."
+            + (f"\nIt should best cover these must-haves:\n{must}" if must else "")
+            + "\nReply with ONLY the number of the best candidate."
+        )
+        raw = _stream([SystemMessage(content=system),
+                       HumanMessage(content=f"{listing}\n\nBest candidate number:")], precise=True)
+        m = re.search(r"\d+", raw or "")
+        idx = (int(m.group()) - 1) if m else 0
+        if not (0 <= idx < len(candidates)):
+            idx = 0
+        console.print(f"[dim]  ✓ selected candidate {idx + 1} of {len(candidates)}[/dim]")
+        return candidates[idx]
+
+    def _summarize(self, spec: PhaseSpec, messages: list) -> str:
+        from core.config import get_config
+
+        if spec.decompose:
+            decomposed = self._summarize_decomposed(spec, messages, spec.decompose)
+            if decomposed:
+                return decomposed   # decomposition is the quality mechanism here
+
+        n = spec.best_of if get_config().get("devmode", "best_of", default=True) else 1
+        if n > 1:
+            console.print(f"[dim]🎲 Generating {n} candidate {spec.title} decisions, then "
+                          f"judging the best…[/dim]")
+            candidates = []
+            for i in range(n):
+                console.print(Rule(f"[dim]candidate {i + 1}/{n}[/dim]"))
+                c = self._one_decision(spec, messages, angle=self._ANGLES[i % len(self._ANGLES)])
+                if c.strip():
+                    candidates.append(c)
+            if not candidates:
+                return ""
+            return candidates[0] if len(candidates) == 1 else self._judge_best(spec, candidates)
+
+        return self._one_decision(spec, messages)
 
     # ── Cross-phase consistency ─────────────────────────────────────────────────
 
