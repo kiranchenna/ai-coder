@@ -41,11 +41,11 @@ def _decision_section(text: str) -> str:
     return body.strip()
 
 
-def _stream(messages, precise: bool = False) -> str:
+def _stream(messages, precise: bool = False, model: str | None = None) -> str:
     """Stream a conversational model response to the terminal; return the text."""
     from core.model import get_chat_model
 
-    llm = get_chat_model(precise=precise)
+    llm = get_chat_model(precise=precise, model=model)
     acc = ""
     console.print()
     try:
@@ -62,13 +62,24 @@ def _stream(messages, precise: bool = False) -> str:
     return acc
 
 
+def _critic_stream(messages, precise: bool = True) -> str:
+    """Stream from the optional stronger 'judge' model for high-leverage critic
+    steps (best-of judging, consistency, review); falls back to the main model."""
+    from core.config import get_config
+    judge = (get_config().get("devmode", "judge_model", default="") or "").strip()
+    if judge:
+        return _stream(messages, precise=precise, model=judge)
+    return _stream(messages, precise=precise)
+
+
 class DevSession:
     """Orchestrates the SDLC design phases for a project."""
 
-    def __init__(self, workspace: Path, idea: str | None = None):
+    def __init__(self, workspace: Path, idea: str | None = None, auto: bool = False):
         self.workspace = workspace.resolve()
         self.dir = self.workspace / "docs" / "dev"
         self.state_file = self.dir / "state.json"
+        self.auto = auto  # fast mode: the roles decide themselves, no back-and-forth
         self.state = self._load_or_init(idea)
 
     # ── State ──────────────────────────────────────────────────────────────────
@@ -290,14 +301,23 @@ class DevSession:
             seed = self._infer_conventions()
 
         system = self._system_prompt(spec, context, research, repo, docs, seed)
-        opening = (f"Open the {spec.title} phase: give a concise first-draft proposal for "
-                   f"{spec.focus}, then ask me the key questions you need answered.")
+        opening = (
+            f"Design the {spec.title} fully now: make the senior decisions yourself for "
+            f"{spec.focus}. Do NOT ask me questions — produce a complete, concrete proposal."
+            if self.auto else
+            f"Open the {spec.title} phase: give a concise first-draft proposal for "
+            f"{spec.focus}, then ask me the key questions you need answered."
+        )
         messages = [SystemMessage(content=system), HumanMessage(content=opening)]
 
         console.print(Rule(f"[bold magenta]{spec.role} — {spec.title}[/bold magenta]"))
         ai = _stream(messages)
         messages.append(AIMessage(content=ai))
         transcript = [f"**{spec.role}:** {ai}"]
+
+        if self.auto:  # fast mode — accept the role's proposal, no back-and-forth
+            console.print("[dim]⚡ fast mode — capturing the proposal.[/dim]")
+            return "done", messages
 
         while True:
             console.print("\n[dim]Reply, or type: [bold]done[/bold] · [bold]skip[/bold] · "
@@ -458,8 +478,8 @@ class DevSession:
             + (f"\nIt should best cover these must-haves:\n{must}" if must else "")
             + "\nReply with ONLY the number of the best candidate."
         )
-        raw = _stream([SystemMessage(content=system),
-                       HumanMessage(content=f"{listing}\n\nBest candidate number:")], precise=True)
+        raw = _critic_stream([SystemMessage(content=system),
+                              HumanMessage(content=f"{listing}\n\nBest candidate number:")])
         m = re.search(r"candidate\s*(\d+)", raw or "", re.IGNORECASE) or re.search(r"(\d+)", raw or "")
         idx = (int(m.group(1)) - 1) if m else 0
         if not (0 <= idx < len(candidates)):
@@ -565,8 +585,7 @@ class DevSession:
             f"List only the contradictions, or exactly NONE."
         )
         try:
-            out = _stream([SystemMessage(content=system), HumanMessage(content=prompt)],
-                          precise=True).strip()
+            out = _critic_stream([SystemMessage(content=system), HumanMessage(content=prompt)]).strip()
         except Exception:  # noqa: BLE001
             return ""
         if not out or out.upper().lstrip().startswith("NONE"):
@@ -628,11 +647,10 @@ class DevSession:
             f"findings list — each finding with a severity (HIGH/MEDIUM/LOW), the phase it "
             f"concerns, and a concrete recommendation. Be direct; if it's solid, say so."
         )
-        findings = _stream(
+        findings = _critic_stream(
             [SystemMessage(content=system),
              HumanMessage(content=f"# Design decisions to review\n{artifacts[:8000]}\n\n"
                                   f"Produce the review findings.")],
-            precise=True,
         )
         path = self._artifact_path(spec)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -723,9 +741,8 @@ class DevSession:
         )
         from core.model import balanced_json_arrays
         try:
-            raw = _stream([SystemMessage(content=system),
-                           HumanMessage(content=f"# Phase decisions\n{blocks}\n\nReturn the findings JSON.")],
-                          precise=True)
+            raw = _critic_stream([SystemMessage(content=system),
+                                  HumanMessage(content=f"# Phase decisions\n{blocks}\n\nReturn the findings JSON.")])
         except Exception:  # noqa: BLE001
             return []
         findings: list[dict] = []
@@ -882,7 +899,7 @@ class DevSession:
             if st == "done" and not only:
                 continue
             console.print()
-            if st != "in_progress" and not Confirm.ask(
+            if not self.auto and st != "in_progress" and not Confirm.ask(
                 f"[bold]Run phase: {spec.title}?[/bold] [dim]({spec.role})[/dim]", default=True
             ):
                 self._set_status(spec.id, "skipped")

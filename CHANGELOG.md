@@ -1,6 +1,17 @@
 # Changelog
 
 ## Unreleased
+- **Developer Mode build loop** — `dev build` now closes the loop: after
+  generating files it runs a **compile check → tests → agentic-fix** loop (up to
+  3 rounds) so it produces code that actually runs, not just plausible code. It
+  finds a **nested project root** (tests in a subdirectory are no longer missed),
+  writes a **`build_manifest.json`** mapping each file to the design phases it
+  implements, and a Python syntax pass catches cross-file breakage before tests.
+- **Developer Mode — fast mode & hybrid judging** — `develop --fast <idea>` runs
+  the whole design in one pass (each role makes the senior decisions itself, no
+  back-and-forth). `devmode.judge_model` lets an optional stronger model handle
+  just the high-leverage critic steps (best-of judging, consistency, review)
+  while generation stays on the main local model.
 - **Developer Mode quality** — squeeze better output from a small local model:
   per-phase "must-cover" checklists force domain-defining depth (e.g. Security
   must name the actual E2E protocol / per-device keys, Architecture the real-time

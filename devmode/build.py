@@ -82,13 +82,16 @@ class Builder:
             return None
         conv = self._conventions()
         console.print("[dim]📋 Planning the file structure from the design…[/dim]")
+        phase_ids = [p.id for p in PHASES if p.target == "doc" and p.kind != "review"]
         system = (
             "You are a senior engineer. From the design spec and the project's coding "
             "conventions, list ALL files needed for a complete, runnable project, in "
             "dependency order (config/setup, then data models, then business logic, then "
             "API/routes, then UI, then tests). Follow the conventions' folder structure and "
-            "naming EXACTLY. Output ONLY a JSON array, no prose:\n"
-            '[{"path": "relative/path/file.ext", "purpose": "what this file contains"}]'
+            "naming EXACTLY. For each file, list which design phases it implements (from: "
+            f"{phase_ids}). Output ONLY a JSON array, no prose:\n"
+            '[{"path": "relative/path/file.ext", "purpose": "what this file contains", '
+            '"implements": ["data_model", "api"]}]'
         )
         prompt = f"Design spec:\n{spec[:24000]}\n\nCoding conventions:\n{conv[:3000]}\n\nProduce the JSON file list."
         try:
@@ -102,9 +105,12 @@ class Builder:
         if not files:
             console.print("[yellow]Couldn't produce a file plan — check the design docs and retry.[/yellow]")
             return None
+        valid_ids = set(phase_ids)
         plan = {
             "idea": self.session.state.get("idea", ""),
-            "files": [{"path": f["path"], "purpose": f.get("purpose", ""), "status": "pending"}
+            "files": [{"path": f["path"], "purpose": f.get("purpose", ""),
+                       "implements": [p for p in f.get("implements", []) if p in valid_ids],
+                       "status": "pending"}
                       for f in files],
         }
         self._save_plan(plan)
@@ -152,11 +158,18 @@ class Builder:
             completed.append(entry["path"])
             self._save_plan(plan)
 
+        self._write_manifest(plan)
         console.print()
-        console.print(Panel("✅ Build complete.\n[dim]Verifying… then ask the agent to fix anything, "
-                            "or 'dev revisit <phase>' to change a decision.[/dim]",
+        console.print(Panel("✅ Build complete.\n[dim]Verifying (compile → tests → fix loop)…[/dim]",
                             title="[bold green]Developer Mode — build[/bold green]", border_style="green"))
-        self._verify()
+        self._verify_and_fix(spec)
+
+    def _write_manifest(self, plan: dict) -> None:
+        """Provenance: map each built file to the design phases it implements."""
+        manifest = {f["path"]: f.get("implements", [])
+                    for f in plan["files"] if f["status"] == "done"}
+        (self.dir / "build_manifest.json").write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def _generate_file(self, entry: dict, spec: str, conv: str, completed: list[str]) -> str:
         recent = ""
@@ -216,16 +229,101 @@ class Builder:
             return draft
         return fixed or draft
 
-    def _verify(self) -> None:
-        try:
-            from core.project import detect_test_command
-            from tools.shell_tools import run_command
+    # ── Verify → fix loop ──────────────────────────────────────────────────────
 
-            detected = detect_test_command(self.workspace)
-            if not detected:
+    _IGNORE_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules", "docs",
+                    ".pytest_cache", ".mypy_cache", "dist", "build"}
+    _MAX_FIX_ROUNDS = 3
+
+    def _project_dir(self):
+        """Where the runnable project actually lives — handles a nested subdir."""
+        from core.project import detect_test_command
+        if detect_test_command(self.workspace):
+            return self.workspace
+        try:
+            subdirs = [d for d in self.workspace.iterdir()
+                       if d.is_dir() and d.name not in self._IGNORE_DIRS]
+        except OSError:
+            return self.workspace
+        for d in subdirs:                      # one level down: nested project root
+            if detect_test_command(d):
+                return d
+        return self.workspace
+
+    def _python_files(self, root):
+        out = []
+        for p in root.rglob("*.py"):
+            if not any(part in self._IGNORE_DIRS for part in p.parts):
+                out.append(p)
+        return out
+
+    def _compile_problems(self, proj) -> str:
+        """Cheap cross-file coherence: syntax-check every Python file."""
+        import py_compile
+        errors = []
+        for f in self._python_files(proj):
+            try:
+                py_compile.compile(str(f), doraise=True)
+            except py_compile.PyCompileError as e:
+                errors.append(str(e).strip())
+            except Exception:  # noqa: BLE001
+                pass
+        return ("Python syntax errors (fix these first):\n\n" + "\n\n".join(errors[:10])) if errors else ""
+
+    def _run_tests(self, proj):
+        """Run the detected test command in the real project dir. → (label, code, output) | None."""
+        from core.project import detect_test_command
+        from tools.shell_tools import run_command
+        detected = detect_test_command(proj)
+        if not detected:
+            return None
+        console.print(f"[dim]Running {detected[1]} in {proj.name}/…[/dim]")
+        out, err, code = run_command(detected[0], cwd=proj, stream_output=False, timeout=240)
+        return detected[1], code, (out or "") + (("\n" + err) if err else "")
+
+    def _verify_and_fix(self, spec: str) -> None:
+        proj = self._project_dir()
+        for rnd in range(1, self._MAX_FIX_ROUNDS + 1):
+            try:
+                problem = self._compile_problems(proj)
+                label = "compile"
+                if not problem:
+                    tr = self._run_tests(proj)
+                    if tr is None:
+                        console.print("[dim]No test toolchain detected — skipping verification.[/dim]")
+                        return
+                    label, code, output = tr
+                    if code == 0:
+                        console.print(f"[bold green]✔ {label} passed.[/bold green]")
+                        return
+                    problem = f"`{label}` failed (exit {code}):\n{output[-3000:]}"
+            except Exception as e:  # noqa: BLE001
+                console.print(f"[yellow]Verification could not run: {e}[/yellow]")
                 return
-            console.print(f"[dim]Running {detected[1]}…[/dim]")
-            _o, _e, code = run_command(detected[0], cwd=self.workspace, stream_output=False, timeout=180)
-            console.print(f"[{'green' if code == 0 else 'yellow'}]Tests exit code {code}[/]")
-        except Exception:  # noqa: BLE001
-            pass
+
+            console.print(f"[yellow]⚠ Verification found problems (round {rnd}/{self._MAX_FIX_ROUNDS}).[/yellow]")
+            if rnd == self._MAX_FIX_ROUNDS:
+                console.print(Panel(problem[:1500], title="[yellow]Unresolved after fix attempts[/yellow]",
+                                    border_style="yellow"))
+                console.print("[dim]Fix manually, or re-run 'dev build', or 'dev revisit <phase>'.[/dim]")
+                return
+            if not Confirm.ask("Let the agent fix it?", default=True):
+                console.print("[dim]Left as-is. The problem above is saved nowhere — copy it if needed.[/dim]")
+                return
+            self._agentic_fix(proj, problem)
+
+    def _agentic_fix(self, proj, problem: str) -> None:
+        from agent.loop import AgentSession
+        rel = "." if proj == self.workspace else str(proj.relative_to(self.workspace))
+        task = (
+            "The generated project fails its build verification. Fix the code so it compiles "
+            "and the tests pass.\n\n"
+            f"# The failure\n{problem}\n\n"
+            f"The project root is '{rel}'. Work STEP BY STEP, one tool at a time (do not batch "
+            "tool calls):\n"
+            "1. read_file the file(s) named in the error FULLY before editing.\n"
+            "2. Make minimal, focused edit_file changes — copy the exact text you saw.\n"
+            "3. Re-run the tests to confirm, and stop once they pass.\n"
+            "Do not rewrite files wholesale; fix only what's broken."
+        )
+        AgentSession(self.workspace).send(task)

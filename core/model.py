@@ -84,7 +84,7 @@ def extract_text_tool_calls(content: str) -> list[dict]:
     return calls
 
 
-def get_chat_model(precise: bool = False, tools: Sequence | None = None):
+def get_chat_model(precise: bool = False, tools: Sequence | None = None, model: str | None = None):
     """
     Build a ChatOllama instance from the active config.
 
@@ -102,7 +102,7 @@ def get_chat_model(precise: bool = False, tools: Sequence | None = None):
 
     cfg = get_config()
     llm = ChatOllama(
-        model=cfg.model_name,
+        model=model or cfg.model_name,
         base_url=cfg.model_base_url,
         temperature=cfg.model_temperature_precise if precise else cfg.model_temperature,
         num_ctx=cfg.model_context_length,

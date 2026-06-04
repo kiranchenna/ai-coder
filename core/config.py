@@ -114,6 +114,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # For critical phases, generate several candidate decisions and let a
         # judge pick the strongest (more calls, better worst-case quality).
         "best_of": True,
+        # Optional stronger model used ONLY for the infrequent, high-leverage
+        # critic steps (best-of judging, consistency, design review) while
+        # generation stays on the main local model. "" = use the main model.
+        # e.g. "qwen2.5-coder:14b" or a larger model you've pulled.
+        "judge_model": "",
     },
 }
 

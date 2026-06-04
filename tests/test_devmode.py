@@ -90,6 +90,40 @@ def test_run_phase_end_to_end_writes_artifact(tmp_path, monkeypatch):
         dm.update(saved)
 
 
+def test_fast_mode_skips_discussion(tmp_path, monkeypatch):
+    # In auto mode, _discuss must NOT call Prompt.ask — it captures the proposal.
+    def _boom(*a, **k):
+        raise AssertionError("Prompt.ask should not be called in fast mode")
+    monkeypatch.setattr(S.Prompt, "ask", _boom)
+    monkeypatch.setattr(S, "_stream", lambda msgs, precise=False: "A complete proposal.")
+    ds = DevSession(tmp_path, "x", auto=True)
+    result, messages = ds._discuss(PHASES_BY_ID["requirements"])
+    assert result == "done" and any("proposal" in str(m.content) for m in messages)
+
+
+def test_critic_stream_uses_judge_model(monkeypatch):
+    import devmode.session as S2
+    from core.config import get_config
+    get_config().raw()["devmode"]["judge_model"] = "big-model:99b"
+    seen = {}
+    monkeypatch.setattr(S2, "_stream",
+                        lambda msgs, precise=True, model=None: (seen.update(model=model), "ok")[1])
+    out = S2._critic_stream([])
+    get_config().raw()["devmode"]["judge_model"] = ""
+    assert out == "ok" and seen["model"] == "big-model:99b"   # routed to the judge model
+
+
+def test_critic_stream_falls_back_to_main(monkeypatch):
+    import devmode.session as S2
+    from core.config import get_config
+    get_config().raw()["devmode"]["judge_model"] = ""        # not configured
+    seen = {"model": "SENTINEL"}
+    monkeypatch.setattr(S2, "_stream",
+                        lambda msgs, precise=True: (seen.update(model=None), "ok")[1])  # no model kwarg
+    S2._critic_stream([])
+    assert seen["model"] is None                             # main model (no override)
+
+
 def test_run_phase_review_routes_to_review(tmp_path, monkeypatch):
     # The review-kind phase must take the _run_review path, not _discuss.
     ds = DevSession(tmp_path, "x")
@@ -127,13 +161,52 @@ def test_build_generates_pending_files(tmp_path, monkeypatch):
     monkeypatch.setattr(b, "_generate_file",
                         lambda entry, spec, conv, completed: (gen.append(entry["path"]),
                                                               f"# {entry['path']}\nx = 1\n")[1])
-    monkeypatch.setattr(b, "_verify", lambda: None)
+    monkeypatch.setattr(b, "_verify_and_fix", lambda spec: None)
     monkeypatch.setattr(B.Confirm, "ask", lambda *a, **k: True)
     b.build()
 
     assert (tmp_path / "app.py").read_text().startswith("# app.py")
     assert gen == ["app.py"]                        # the done file was skipped
     assert all(f["status"] == "done" for f in b._load_plan()["files"])
+    assert (tmp_path / "docs" / "dev" / "build_manifest.json").exists()  # provenance written
+
+
+def test_build_finds_nested_project_dir(tmp_path):
+    import devmode.build as B
+    (tmp_path / "docs" / "dev").mkdir(parents=True)
+    b = B.Builder(tmp_path)
+    # nothing at root → workspace
+    assert b._project_dir() == tmp_path
+    # a nested project with a test marker → that subdir
+    nested = tmp_path / "wordcount-cli"
+    (nested / "tests").mkdir(parents=True)
+    (nested / "pyproject.toml").write_text("[project]\nname='x'\n")
+    assert b._project_dir() == nested
+
+
+def test_compile_problems_catches_syntax_error(tmp_path):
+    import devmode.build as B
+    (tmp_path / "docs" / "dev").mkdir(parents=True)
+    b = B.Builder(tmp_path)
+    (tmp_path / "good.py").write_text("x = 1\n")
+    assert b._compile_problems(tmp_path) == ""
+    (tmp_path / "bad.py").write_text("def oops(:\n    pass\n")   # syntax error
+    problem = b._compile_problems(tmp_path)
+    assert "syntax error" in problem.lower() and "bad.py" in problem
+
+
+def test_plan_keeps_only_valid_implements(tmp_path, monkeypatch):
+    import devmode.build as B
+    from core.model import get_chat_model  # noqa: F401 — patched below
+    (tmp_path / "docs" / "dev").mkdir(parents=True)
+    (tmp_path / "docs" / "dev" / "03_requirements.md").write_text("# Requirements\nBuild X.")
+    b = B.Builder(tmp_path)
+
+    class _AI:
+        content = '[{"path":"m.py","purpose":"model","implements":["data_model","bogus"]}]'
+    monkeypatch.setattr(B, "get_chat_model", lambda precise=False: type("M", (), {"invoke": lambda self, msgs: _AI()})())
+    plan = b.generate_plan()
+    assert plan["files"][0]["implements"] == ["data_model"]     # 'bogus' dropped
 
 
 # ─── Auto-resync (revisit) ────────────────────────────────────────────────────

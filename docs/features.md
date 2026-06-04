@@ -126,10 +126,14 @@ flags. The same discussion loop runs for every phase except the review-kind one.
   codebase and the Conventions phase infers your current style.
 - **`dev build`** (`devmode/build.py`) — proposes a file plan
   (`docs/dev/build_plan.json`, user-editable), then generates each file grounded
-  in the spec + conventions, resumable per file, and verifies.
+  in the spec + conventions (resumable per file), and **closes the loop**: a
+  compile check → tests → agentic-fix loop (≤3 rounds, finds a nested project
+  root) gets the code running. Writes `build_manifest.json` (file → phases).
 - **`dev revisit <phase>`** / **`dev resolve`** — change a decision, or
   review→fix cross-phase contradictions; both **auto-resync** the code
   (`devmode/resync.py`) via an agentic diff→apply→verify task.
+- **`develop --fast <idea>`** — runs the whole design in one pass; each role
+  makes its own senior decisions with no back-and-forth (still applies all levers).
 
 ### Quality levers (driving a small local model)
 
@@ -144,7 +148,9 @@ Each is independently toggleable under the `devmode` config key:
 | Best-of-N + judge | `session._summarize` / `_judge_best` (`_BEST_OF`) | `best_of` |
 | Cross-phase consistency check | `session._report_consistency` (digest-based) | `consistency_check` |
 | Build self-review | `build._review_file` | `build_review` |
+| Build verify→fix loop | `build._verify_and_fix` (compile → tests → agentic fix) | — |
 | Resolve (fix + resync) | `session.resolve` / `_apply_fix` | — |
+| Hybrid judging (stronger critic) | `session._critic_stream` | `judge_model` |
 
 Measured effect: on a WhatsApp-clone design test the per-phase score rose from
 ~5.9 to ~8.2 / 10. The honest ceiling: subtle semantic contradictions a 7B can't

@@ -291,6 +291,7 @@ AICODER.md                # the coding conventions the build follows
 
 ```
 develop <idea>        # start (or resume) the design
+develop --fast <idea> # design the whole thing in one pass (roles decide; no back-and-forth)
 dev                   # resume the design
 dev status            # show phase progress
 dev build             # turn the design into code — proposes a file plan you can
@@ -299,7 +300,7 @@ dev revisit <phase>   # re-open a decision; if it changes, auto-resync the code 
 dev resolve           # cross-phase review → fix the design contradictions → resync code
 ```
 
-- **`dev build`** proposes the folder/file structure from the design + your conventions. **Edit `docs/dev/build_plan.json`** (paths, order, naming) and re-run to use your exact structure. It then generates each file — grounded in the spec + `AICODER.md` — shown as a diff, **resumable per file**, and runs your tests at the end.
+- **`dev build`** proposes the folder/file structure from the design + your conventions. **Edit `docs/dev/build_plan.json`** (paths, order, naming) and re-run to use your exact structure. It then generates each file — grounded in the spec + `AICODER.md`, shown as a diff, **resumable per file** — and closes the loop: a **compile check → tests → agentic-fix loop** (up to 3 rounds) gets the code actually running, even when the project lives in a subdirectory. It also writes `docs/dev/build_manifest.json` mapping each file to the design phases it implements.
 - **`dev revisit <phase>`** lets you change any decision later. If the decision changed and code was built, AICoder **auto-resyncs**: it diffs old→new and runs an agentic task to propagate the change through the code, then verifies.
 - **`dev resolve`** reviews every phase together, lists the cross-phase contradictions (e.g. a schema that stores plaintext despite an end-to-end-encryption promise, or an auth mechanism that disagrees with the security phase), and for each one you accept it **rewrites the offending phase's decision and auto-resyncs the code**. It catches blunt contradictions reliably; subtle ones a small local model can't reason through may still need a manual `dev revisit`.
 
@@ -528,6 +529,7 @@ devmode:                          # Developer Mode quality levers (see "How it g
   best_of: true                   # generate N candidates for critical phases, judge the best
   consistency_check: true         # flag cross-phase contradictions as each phase lands
   build_review: true              # self-review each generated file before writing it
+  judge_model: ""                 # optional stronger model for critic steps only ("" = main model)
 ```
 
 - A `.aicoderignore` file (gitignore syntax) in your workspace further excludes files from scanning.
