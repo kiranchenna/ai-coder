@@ -179,9 +179,42 @@ class Builder:
             f"Output the complete content of {entry['path']} now."
         )
         out = _stream([SystemMessage(content=system), HumanMessage(content=prompt)], precise=True)
-        out = re.sub(r"^```[a-zA-Z0-9]*\n?", "", out.strip())
+        out = self._strip_fences(out)
+        from core.config import get_config
+        if out and get_config().get("devmode", "build_review", default=True):
+            out = self._review_file(entry, out, system, prompt)
+        return out
+
+    @staticmethod
+    def _strip_fences(text: str) -> str:
+        out = re.sub(r"^```[a-zA-Z0-9]*\n?", "", (text or "").strip())
         out = re.sub(r"\n?```$", "", out)
         return out.strip()
+
+    def _review_file(self, entry: dict, draft: str, system: str, prompt: str) -> str:
+        """Draft → self-review → fix: catch bugs/placeholders before writing."""
+        console.print("  [dim]↻ self-reviewing…[/dim]")
+        review_prompt = (
+            f"Here is your draft of {entry['path']}:\n\n{draft}\n\n"
+            "Review it critically against the design spec and conventions above. Check for: "
+            "bugs and logic errors, anything left as a placeholder/TODO/stub, missing imports "
+            "or undefined references, mismatches with the file's stated purpose, and convention "
+            "violations. If it is already correct and complete, output it UNCHANGED. Otherwise "
+            "output the corrected file. Output ONLY the raw file content — no fences, no prose."
+        )
+        try:
+            fixed = _stream(
+                [SystemMessage(content=system), HumanMessage(content=prompt),
+                 HumanMessage(content=review_prompt)],
+                precise=True,
+            )
+        except Exception:  # noqa: BLE001
+            return draft
+        fixed = self._strip_fences(fixed)
+        # Guard against a degenerate/truncated review nuking a good draft.
+        if len(fixed) < len(draft) * 0.5:
+            return draft
+        return fixed or draft
 
     def _verify(self) -> None:
         try:

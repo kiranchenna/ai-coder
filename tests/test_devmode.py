@@ -139,6 +139,44 @@ def test_revisit_no_resync_when_unchanged(tmp_path, monkeypatch):
     assert calls == {}                              # no change → no resync
 
 
+def test_generate_file_self_reviews(tmp_path, monkeypatch):
+    import devmode.build as B
+    from core.config import get_config
+    get_config().raw()["devmode"]["build_review"] = True
+
+    seq = iter(["def f():\n    pass  # TODO\n", "def f():\n    return 42\n"])
+    monkeypatch.setattr(B, "_stream", lambda msgs, precise=False: next(seq))
+    b = B.Builder(tmp_path)
+    out = b._generate_file({"path": "f.py", "purpose": "do f"}, "spec", "conv", [])
+    assert out == "def f():\n    return 42"            # the reviewed/fixed version won
+
+
+def test_generate_file_review_keeps_draft_if_truncated(tmp_path, monkeypatch):
+    import devmode.build as B
+    from core.config import get_config
+    get_config().raw()["devmode"]["build_review"] = True
+
+    draft = "def f():\n    return 1\n\n" * 5
+    seq = iter([draft, "def f"])                       # degenerate/truncated review
+    monkeypatch.setattr(B, "_stream", lambda msgs, precise=False: next(seq))
+    b = B.Builder(tmp_path)
+    out = b._generate_file({"path": "f.py", "purpose": "do f"}, "spec", "conv", [])
+    assert out == draft.strip()                        # guard kept the good draft
+
+
+def test_generate_file_review_off(tmp_path, monkeypatch):
+    import devmode.build as B
+    from core.config import get_config
+    get_config().raw()["devmode"]["build_review"] = False
+
+    calls = []
+    monkeypatch.setattr(B, "_stream",
+                        lambda msgs, precise=False: (calls.append(1), "x = 1\n")[1])
+    b = B.Builder(tmp_path)
+    out = b._generate_file({"path": "f.py", "purpose": "do f"}, "spec", "conv", [])
+    assert out == "x = 1" and len(calls) == 1          # no second review call
+
+
 def test_revisit_no_resync_without_a_build(tmp_path, monkeypatch):
     monkeypatch.setattr(S.Confirm, "ask", lambda *a, **k: True)
     ds = DevSession(tmp_path, "x")

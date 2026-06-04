@@ -105,6 +105,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # Developer Mode: refine each phase decision with a draft→critique→revise
         # pass (better depth from a small model, at the cost of an extra call).
         "reflect": True,
+        # `dev build`: after generating each file, run a self-review pass that
+        # checks it against the spec/conventions and fixes bugs before writing.
+        "build_review": True,
     },
 }
 

@@ -8,7 +8,9 @@
   (config `devmode.reflect`), the heavy phases (data model / API / architecture)
   are designed one unit at a time, research phases derive 2-3 targeted queries
   (current versions / protocols) instead of one generic search, and the prompts
-  push depth and forbid dropping requested features.
+  push depth and forbid dropping requested features. `dev build` now self-reviews
+  each generated file (draft → critique for bugs/placeholders/convention misses →
+  fix) before writing it (config `devmode.build_review`).
 - **Developer Mode roles** — added Product Manager (vision/MVP), Market Analyst
   (competitors), Technical Writer (docs plan), and a Design Reviewer that
   critiques all decisions for consistency/gaps/risks before the build (14 roles).
