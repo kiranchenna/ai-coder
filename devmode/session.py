@@ -228,11 +228,43 @@ class DevSession:
             parts += ["", "# Current information from the web (use for versions/best practices)", research]
         return "\n".join(parts)
 
+    def _research_queries(self, spec: PhaseSpec) -> list[str]:
+        """Ask the model what to look up for this phase (2-3 targeted queries)."""
+        from core.model import balanced_json_arrays, get_chat_model
+
+        prompt = (
+            f"For designing the '{spec.title}' of this project, list 2-3 SPECIFIC things to "
+            f"look up online right now — current stable versions, protocols, proven patterns, "
+            f"or common pitfalls. Project: {self.state.get('idea', '')}.\n"
+            f'Output ONLY a JSON array of web-search queries, e.g. ["X latest stable version", '
+            f'"Y architecture best practices 2026"].'
+        )
+        try:
+            raw = get_chat_model(precise=True).invoke([HumanMessage(content=prompt)]).content
+            raw = raw if isinstance(raw, str) else str(raw)
+        except Exception:
+            raw = ""
+        for span in balanced_json_arrays(raw):
+            try:
+                data = json.loads(span)
+            except Exception:
+                continue
+            if isinstance(data, list):
+                qs = [str(x).strip() for x in data if isinstance(x, str) and x.strip()][:3]
+                if qs:
+                    return qs
+        return [f"{self.state.get('idea', '')} {spec.title} best practices current versions 2026"]
+
     def _research(self, spec: PhaseSpec) -> str:
+        """Targeted multi-query web research → current facts in context."""
         try:
             from rag.research import research_topic
-            topic = f"{self.state.get('idea','')} {spec.title} best practices current versions 2026"
-            return research_topic(topic, project="")["text"][:3000]
+            parts = []
+            for q in self._research_queries(spec):
+                r = research_topic(q, project="", fetch_pages=1)
+                if r.get("text"):
+                    parts.append(f"### {q}\n{r['text'][:1500]}")
+            return "\n\n".join(parts)[:4500]
         except Exception:
             return ""
 

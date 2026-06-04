@@ -5,8 +5,10 @@
   per-phase "must-cover" checklists force domain-defining depth (e.g. Security
   must name the actual E2E protocol / per-device keys, Architecture the real-time
   backbone), a draft→critique→revise reflection pass refines each decision
-  (config `devmode.reflect`), and the prompts push depth and forbid dropping
-  requested features.
+  (config `devmode.reflect`), the heavy phases (data model / API / architecture)
+  are designed one unit at a time, research phases derive 2-3 targeted queries
+  (current versions / protocols) instead of one generic search, and the prompts
+  push depth and forbid dropping requested features.
 - **Developer Mode roles** — added Product Manager (vision/MVP), Market Analyst
   (competitors), Technical Writer (docs plan), and a Design Reviewer that
   critiques all decisions for consistency/gaps/risks before the build (14 roles).

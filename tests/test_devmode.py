@@ -229,6 +229,39 @@ def test_decomposed_falls_back_when_no_items(tmp_path, monkeypatch):
     assert out == "PLAIN-SUMMARY"
 
 
+def test_research_is_multi_query(tmp_path, monkeypatch):
+    import core.model as CM
+    import rag.research as RR
+
+    class _AI:
+        content = '["websocket scaling 2026", "Signal protocol implementation"]'
+
+    class _LLM:
+        def invoke(self, msgs):
+            return _AI()
+
+    monkeypatch.setattr(CM, "get_chat_model", lambda precise=False: _LLM())
+    monkeypatch.setattr(RR, "research_topic",
+                        lambda q, project="", fetch_pages=2: {"text": f"FACTS::{q}", "count": 1, "sources": []})
+    ds = DevSession(tmp_path, "a messaging app")
+    out = ds._research(PHASES_BY_ID["architecture"])
+    assert "websocket scaling 2026" in out and "FACTS::websocket scaling 2026" in out
+    assert "Signal protocol implementation" in out      # both queries fetched
+
+
+def test_research_queries_fallback(tmp_path, monkeypatch):
+    import core.model as CM
+
+    class _LLM:
+        def invoke(self, msgs):
+            raise RuntimeError("no model")
+
+    monkeypatch.setattr(CM, "get_chat_model", lambda precise=False: _LLM())
+    ds = DevSession(tmp_path, "x")
+    qs = ds._research_queries(PHASES_BY_ID["architecture"])
+    assert len(qs) == 1 and "Architecture" in qs[0]     # graceful single-query fallback
+
+
 def test_phases_have_decompose_set():
     assert PHASES_BY_ID["data_model"].decompose == "entity"
     assert PHASES_BY_ID["api"].decompose == "resource"
