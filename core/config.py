@@ -108,6 +108,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # `dev build`: after generating each file, run a self-review pass that
         # checks it against the spec/conventions and fixes bugs before writing.
         "build_review": True,
+        # After each phase, check its decision against earlier phases for
+        # contradictions (e.g. a schema that violates the security model) and
+        # surface them immediately instead of waiting for the final review.
+        "consistency_check": True,
     },
 }
 

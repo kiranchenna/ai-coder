@@ -10,7 +10,11 @@
   (current versions / protocols) instead of one generic search, and the prompts
   push depth and forbid dropping requested features. `dev build` now self-reviews
   each generated file (draft → critique for bugs/placeholders/convention misses →
-  fix) before writing it (config `devmode.build_review`).
+  fix) before writing it (config `devmode.build_review`). After each phase a
+  cross-phase consistency check digests the new decision and flags contradictions
+  with earlier ones (auth/tech/datastore mismatches, dropped scope, server-side
+  secrets vs an E2E promise), logged to `docs/dev/consistency_notes.md` (config
+  `devmode.consistency_check`).
 - **Developer Mode roles** — added Product Manager (vision/MVP), Market Analyst
   (competitors), Technical Writer (docs plan), and a Design Reviewer that
   critiques all decisions for consistency/gaps/risks before the build (14 roles).

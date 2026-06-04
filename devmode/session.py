@@ -101,11 +101,11 @@ class DevSession:
         return (self.workspace / spec.filename) if spec.target == "conventions" \
             else (self.dir / spec.filename)
 
-    def _prior_artifacts(self) -> str:
+    def _prior_artifacts(self, exclude: str | None = None) -> str:
         """Concatenate completed decision artifacts to ground later phases."""
         parts = []
         for p in PHASES:
-            if p.target != "doc" or p.kind == "review":
+            if p.target != "doc" or p.kind == "review" or p.id == exclude:
                 continue
             path = self.dir / p.filename
             if path.exists():
@@ -425,6 +425,128 @@ class DevSession:
         ).strip()
         return improved or draft
 
+    # ── Cross-phase consistency ─────────────────────────────────────────────────
+
+    def _decision_digest(self, title: str, text: str) -> str:
+        """Compress a decision into a compact bullet list of commitments/constraints.
+
+        Chunked, so deep details in a large *decomposed* decision (40k+ chars of
+        per-entity schema) aren't truncated away before the comparison.
+        """
+        system = (
+            "Extract the concrete technical COMMITMENTS and CONSTRAINTS from this design text "
+            "as a tight bullet list — the things other phases must stay consistent with. "
+            "Include: the auth/authz model; the encryption scheme and exactly WHERE keys and "
+            "plaintext may and may NOT live; data stores and any schema detail that encodes a "
+            "rule (e.g. a column that stores a key, token, or plaintext); protocols, versions "
+            "and scale targets; and any explicit hard rule. One short line each — no prose. "
+            "If the text states none, output exactly: NONE"
+        )
+        step = 8000
+        spans = [text[i:i + step] for i in range(0, min(len(text), 48000), step)] or [text]
+        bullets: list[str] = []
+        for span in spans:
+            try:
+                out = _stream([SystemMessage(content=system),
+                               HumanMessage(content=f"# {title} (excerpt)\n{span}\n\n"
+                                                    f"List the commitments/constraints.")],
+                              precise=True).strip()
+            except Exception:  # noqa: BLE001
+                continue
+            if out and not out.upper().lstrip().startswith("NONE"):
+                bullets.append(out)
+        return "\n".join(bullets)[:1600]
+
+    def _phase_digest(self, pid: str) -> str:
+        """Cached digest of a completed phase's artifact (computed on first use)."""
+        cache = self.state.setdefault("digests", {})
+        if pid in cache:
+            return cache[pid]
+        spec = PHASES_BY_ID.get(pid)
+        if not spec:
+            return ""
+        path = self.dir / spec.filename
+        if not path.exists():
+            return ""
+        cache[pid] = self._decision_digest(spec.title, path.read_text(encoding="utf-8", errors="replace"))
+        self._save()
+        return cache[pid]
+
+    def _consistency_findings(self, spec: PhaseSpec, prior: str, digest: str) -> str:
+        """Find contradictions between a new decision's digest and earlier ones. '' if clean."""
+        system = (
+            "You are a senior reviewer checking ONE new design decision against the decisions "
+            "already made in EARLIER phases of the same project (given as constraint "
+            "summaries). Report ONLY direct CONTRADICTIONS — where the new decision conflicts "
+            "with, violates, or is incompatible with an earlier decision. Do NOT report gaps, "
+            "improvements, or style; only genuine inconsistencies between phases.\n"
+            "Reason carefully about these high-value contradiction classes:\n"
+            "- SECURITY INVARIANTS: if a phase says the server must never see plaintext or hold "
+            "private keys (e.g. end-to-end encryption), then storing a private key, password, "
+            "or plaintext server-side is a HIGH contradiction — even if it is 'encrypted at "
+            "rest' or stored as bytes. Encrypting a private key at rest does NOT satisfy E2E.\n"
+            "- TECH MISMATCH: the same data assigned to a different datastore/technology than an "
+            "earlier phase chose.\n"
+            "- AUTH MISMATCH: a different authentication/authorization mechanism than decided.\n"
+            "- DROPPED SCOPE: a required feature with no corresponding schema/endpoint/flow.\n"
+            "For each contradiction output one line: 'SEVERITY — what conflicts (cite both "
+            "phases): concrete fix' (SEVERITY = HIGH/MEDIUM/LOW).\n"
+            "If there are no contradictions, output exactly: NONE"
+        )
+        prompt = (
+            f"# Constraints from earlier phases\n{prior[:9000]}\n\n"
+            f"# New decision just made — {spec.title} (its commitments/constraints)\n{digest}\n\n"
+            f"List only the contradictions, or exactly NONE."
+        )
+        try:
+            out = _stream([SystemMessage(content=system), HumanMessage(content=prompt)],
+                          precise=True).strip()
+        except Exception:  # noqa: BLE001
+            return ""
+        if not out or out.upper().lstrip().startswith("NONE"):
+            return ""
+        return out
+
+    def _report_consistency(self, spec: PhaseSpec, decision: str) -> str:
+        """Digest a freshly-made decision, check it against earlier phases, surface conflicts."""
+        from core.config import get_config
+        if not get_config().get("devmode", "consistency_check", default=True) or not decision.strip():
+            return ""
+        # Digest this phase and cache it so later phases can compare against it cheaply.
+        digest = self._decision_digest(spec.title, decision)
+        self.state.setdefault("digests", {})[spec.id] = digest
+        self._save()
+        if not digest:
+            return ""
+        prior_parts = []
+        for p in PHASES:
+            if p.id == spec.id or p.target != "doc" or p.kind == "review":
+                continue
+            d = self._phase_digest(p.id)  # only returns for phases whose artifact exists
+            if d:
+                prior_parts.append(f"## {p.title}\n{d}")
+        if not prior_parts:
+            return ""
+        console.print("[dim]🔎 Checking consistency with earlier decisions…[/dim]")
+        findings = self._consistency_findings(spec, "\n\n".join(prior_parts), digest)
+        if not findings:
+            console.print("[dim]  ✓ consistent with earlier phases[/dim]")
+            return ""
+        console.print(Panel(findings,
+                            title=f"[bold yellow]⚠ Consistency — {spec.title} vs earlier phases[/bold yellow]",
+                            border_style="yellow"))
+        console.print("[dim]Resolve with 'dev revisit <phase>' on either side of the conflict.[/dim]")
+        self._append_consistency_note(spec, findings)
+        return findings
+
+    def _append_consistency_note(self, spec: PhaseSpec, findings: str) -> None:
+        path = self.workspace / "docs" / "dev" / "consistency_notes.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        header = "" if path.exists() else "# Consistency notes\n_Cross-phase contradictions flagged as each phase was decided._\n"
+        with path.open("a", encoding="utf-8") as f:
+            f.write(f"{header}\n## {spec.title} — {ts}\n\n{findings}\n")
+
     # ── Phase runner ───────────────────────────────────────────────────────────
 
     def _run_review(self, spec: PhaseSpec) -> str:
@@ -469,6 +591,7 @@ class DevSession:
             # result == "done" → summarize + write artifact
             console.print(Rule("[dim]📝 Capturing decision…[/dim]"))
             decision = self._summarize(spec, messages)
+            self._report_consistency(spec, decision)
             transcript = "\n\n".join(
                 (f"**You:** {m.content}" if isinstance(m, HumanMessage) else f"**{spec.role}:** {m.content}")
                 for m in messages[2:]  # skip system + opening

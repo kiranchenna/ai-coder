@@ -300,6 +300,75 @@ def test_research_queries_fallback(tmp_path, monkeypatch):
     assert len(qs) == 1 and "Architecture" in qs[0]     # graceful single-query fallback
 
 
+def test_consistency_check_flags_contradiction(tmp_path, monkeypatch):
+    import devmode.session as S
+    from core.config import get_config
+    get_config().raw()["devmode"]["consistency_check"] = True
+
+    ds = DevSession(tmp_path, "an E2E messaging app")
+    # An earlier (security) decision exists on disk.
+    sec = PHASES_BY_ID["security"]
+    ds._write_artifact(sec, "Server must NEVER see plaintext or private keys.", "t")
+
+    finding = "HIGH — Data Model stores private_key server-side, but Security says the server never holds keys: store keys only on the device."
+    monkeypatch.setattr(S, "_stream", lambda msgs, precise=False: finding)
+    out = ds._report_consistency(PHASES_BY_ID["data_model"],
+                                 "Devices table has a private_key column on the server.")
+    assert out == finding
+    note = (tmp_path / "docs" / "dev" / "consistency_notes.md").read_text()
+    assert "private_key" in note and "Data Model" in note     # logged to the notes file
+
+
+def test_consistency_check_clean_when_none(tmp_path, monkeypatch):
+    import devmode.session as S
+    from core.config import get_config
+    get_config().raw()["devmode"]["consistency_check"] = True
+
+    ds = DevSession(tmp_path, "x")
+    ds._write_artifact(PHASES_BY_ID["security"], "Use JWT auth.", "t")
+    monkeypatch.setattr(S, "_stream", lambda msgs, precise=False: "NONE")
+    out = ds._report_consistency(PHASES_BY_ID["data_model"], "Users table with id, name.")
+    assert out == ""
+    assert not (tmp_path / "docs" / "dev" / "consistency_notes.md").exists()  # nothing logged
+
+
+def test_consistency_check_excludes_self_and_first_phase(tmp_path, monkeypatch):
+    import devmode.session as S
+    from core.config import get_config
+    get_config().raw()["devmode"]["consistency_check"] = True
+
+    ds = DevSession(tmp_path, "x")
+    # A non-NONE digest, so a contradiction WOULD surface if any comparison ran.
+    monkeypatch.setattr(S, "_stream", lambda msgs, precise=False: "- stores a private_key column")
+    notes = tmp_path / "docs" / "dev" / "consistency_notes.md"
+
+    # No prior artifacts at all → nothing to compare against → no findings.
+    out = ds._report_consistency(PHASES_BY_ID["requirements"], "Some requirements.")
+    assert out == "" and not notes.exists()
+    assert ds.state["digests"]["requirements"]              # but its digest was cached for later
+
+    # Fresh session where ONLY the current phase has been decided → self is
+    # excluded → still nothing to compare against (no false self-conflict).
+    ds2 = DevSession(tmp_path / "ws2", "x")
+    monkeypatch.setattr(S, "_stream", lambda msgs, precise=False: "- stores a private_key column")
+    ds2._write_artifact(PHASES_BY_ID["data_model"], "old schema", "t")
+    out = ds2._report_consistency(PHASES_BY_ID["data_model"], "new schema")
+    assert out == "" and not (tmp_path / "ws2" / "docs" / "dev" / "consistency_notes.md").exists()
+
+
+def test_consistency_check_off(tmp_path, monkeypatch):
+    import devmode.session as S
+    from core.config import get_config
+    get_config().raw()["devmode"]["consistency_check"] = False
+
+    ds = DevSession(tmp_path, "x")
+    ds._write_artifact(PHASES_BY_ID["security"], "no plaintext", "t")
+    called = []
+    monkeypatch.setattr(S, "_stream", lambda msgs, precise=False: (called.append(1), "X")[1])
+    out = ds._report_consistency(PHASES_BY_ID["data_model"], "anything")
+    assert out == "" and called == []                         # disabled → no model call
+
+
 def test_phases_have_decompose_set():
     assert PHASES_BY_ID["data_model"].decompose == "entity"
     assert PHASES_BY_ID["api"].decompose == "resource"
