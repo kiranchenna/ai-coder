@@ -84,7 +84,7 @@ def build_symbol_index(
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except Exception:
             continue
-        rel = str(path.relative_to(workspace))
+        rel = str(path.relative_to(workspace)).replace("\\", "/")
         for i, line in enumerate(lines, start=1):
             for pattern, kind in patterns:
                 m = pattern.match(line)

@@ -12,7 +12,16 @@ All file paths are relative to the workspace root and sandboxed to it.
 from __future__ import annotations
 
 import shlex
+import sys
 from pathlib import Path
+
+
+def _shell_quote(s: str) -> str:
+    """Quote a string for the active platform's shell (subprocess shell=True)."""
+    if sys.platform == "win32":
+        # cmd.exe doesn't treat single quotes as quoting — use double quotes.
+        return '"' + str(s).replace('"', '""') + '"'
+    return shlex.quote(str(s))
 
 from langchain_core.tools import tool
 from rich.console import Console
@@ -297,7 +306,7 @@ def build_tools(workspace: Path) -> list:
                 continue
             if any(part in ignore_dirs for part in p.parts):
                 continue
-            matches.append(str(p.relative_to(workspace)))
+            matches.append(str(p.relative_to(workspace)).replace("\\", "/"))
             if len(matches) >= 100:
                 break
         if not matches:
@@ -403,7 +412,7 @@ def build_tools(workspace: Path) -> list:
         optionally limited to one path. Read-only — use this to review what you changed."""
         from tools.shell_tools import run_command
 
-        cmd = "git diff HEAD" + (f" -- {shlex.quote(path)}" if path else "")
+        cmd = "git diff HEAD" + (f" -- {_shell_quote(path)}" if path else "")
         out, err, code = run_command(cmd, cwd=workspace, stream_output=False)
         if code != 0:
             return f"git diff failed: {(err or out).strip()}"
@@ -418,9 +427,11 @@ def build_tools(workspace: Path) -> list:
     def git_commit(message: str) -> str:
         """Stage all changes and create a git commit with the given message. The user may be
         asked to confirm. Use after a coherent set of edits the user is satisfied with."""
-        # Stage everything except the agent's .bak backups, then commit.
+        # Stage everything except the agent's .bak backups, then commit. Double
+        # quotes around the pathspec work on both POSIX (no glob expansion) and
+        # cmd.exe (quotes stripped, git receives *.bak).
         result = run_with_confirmation(
-            f"git add -A && git reset -q -- '*.bak' && git commit -m {shlex.quote(message)}",
+            f'git add -A && git reset -q -- "*.bak" && git commit -m {_shell_quote(message)}',
             cwd=workspace,
         )
         if result is None:

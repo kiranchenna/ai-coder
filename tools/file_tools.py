@@ -227,7 +227,7 @@ def search_in_files(
             if pattern.search(line):
                 results.append(
                     {
-                        "file": str(file_path.relative_to(workspace)),
+                        "file": str(file_path.relative_to(workspace)).replace("\\", "/"),
                         "line_number": i,
                         "line": line.strip(),
                     }

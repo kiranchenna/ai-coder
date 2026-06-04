@@ -90,7 +90,10 @@ def detect_test_command(workspace: Path) -> tuple[str, str] | None:
     if _exists(root, "pom.xml"):
         return ("mvn -q test", "maven")
     if _exists(root, "build.gradle") or _exists(root, "build.gradle.kts"):
-        return ("./gradlew test" if _exists(root, "gradlew") else "gradle test", "gradle")
+        if _exists(root, "gradlew"):
+            wrapper = "gradlew.bat" if sys.platform == "win32" else "./gradlew"
+            return (f"{wrapper} test", "gradle")
+        return ("gradle test", "gradle")
 
     return None
 

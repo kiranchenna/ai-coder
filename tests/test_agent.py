@@ -128,6 +128,22 @@ def test_locate_edit_not_found():
     assert res[0] is None and res[1] == "not_found"
 
 
+# ─── Cross-platform shell quoting ─────────────────────────────────────────────
+
+def test_shell_quote_posix(monkeypatch):
+    import agent.tools as t
+    monkeypatch.setattr(t.sys, "platform", "linux")
+    assert t._shell_quote("my message") == "'my message'"
+
+
+def test_shell_quote_windows(monkeypatch):
+    import agent.tools as t
+    monkeypatch.setattr(t.sys, "platform", "win32")
+    # cmd.exe needs double quotes, with embedded quotes doubled
+    assert t._shell_quote('a "b" c') == '"a ""b"" c"'
+    assert " " in t._shell_quote("with space") and t._shell_quote("with space").startswith('"')
+
+
 # ─── Code index (find_symbol) ─────────────────────────────────────────────────
 
 def test_build_symbol_index_python_and_js(tmp_path):

@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- **Windows robustness** — cross-platform shell quoting for git commands
+  (cmd.exe-safe), forward-slash path output from search/find/index, and
+  `gradlew.bat` detection.
 - **Hooks** — run user shell commands on agent events (PreToolUse can block a
   tool, PostToolUse to auto-format/notify, Stop on turn end). Opt-in via config.
 - **`find_symbol` + large-file paging** — a fast definitions index to jump to
