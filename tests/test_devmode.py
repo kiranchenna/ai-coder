@@ -66,3 +66,39 @@ def test_resume_skips_completed(tmp_path, monkeypatch):
     ds.run(resume=True)
     assert "requirements" not in ran               # already done → not re-run
     assert "architecture" in ran                   # pending → run
+
+
+# ─── Build hand-off ───────────────────────────────────────────────────────────
+
+def test_parse_files_from_messy_output():
+    from devmode.build import _parse_files
+    out = 'Sure: [{"path": "app.py", "purpose": "main"}, {"path": "util.py"}] done'
+    files = _parse_files(out)
+    assert [f["path"] for f in files] == ["app.py", "util.py"]
+
+
+def test_build_generates_pending_files(tmp_path, monkeypatch):
+    import devmode.build as B
+    from core.config import get_config
+    get_config().raw()["files"]["confirmation"] = "never"
+    get_config().raw()["shell"]["confirmation"] = "never"
+
+    (tmp_path / "docs" / "dev").mkdir(parents=True)
+    (tmp_path / "docs" / "dev" / "01_requirements.md").write_text("# Requirements\nBuild X.")
+
+    b = B.Builder(tmp_path)
+    b._save_plan({"idea": "x", "files": [
+        {"path": "app.py", "purpose": "entry", "status": "pending"},
+        {"path": "pkg/util.py", "purpose": "helpers", "status": "done"},  # already done → skipped
+    ]})
+    gen = []
+    monkeypatch.setattr(b, "_generate_file",
+                        lambda entry, spec, conv, completed: (gen.append(entry["path"]),
+                                                              f"# {entry['path']}\nx = 1\n")[1])
+    monkeypatch.setattr(b, "_verify", lambda: None)
+    monkeypatch.setattr(B.Confirm, "ask", lambda *a, **k: True)
+    b.build()
+
+    assert (tmp_path / "app.py").read_text().startswith("# app.py")
+    assert gen == ["app.py"]                        # the done file was skipped
+    assert all(f["status"] == "done" for f in b._load_plan()["files"])

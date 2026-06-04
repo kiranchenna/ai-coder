@@ -5,8 +5,10 @@
   design: Requirements → Architecture → Security/NFR → Data model → API →
   App flow → UI/UX → Testing → Deployment → Conventions, each a full discussion
   that captures an editable artifact in `docs/dev/` (conventions → `AICODER.md`).
-  Resumable (`dev` / `dev status` / `dev revisit <phase>`). Build hand-off and
-  auto-resync coming next.
+  Resumable (`dev` / `dev status` / `dev revisit <phase>`). `dev build` turns the
+  design into code: proposes a file plan (you control it via build_plan.json),
+  generates file-by-file grounded in the spec + conventions, and verifies.
+  Auto-resync on decision change coming next.
 - **Windows robustness** — cross-platform shell quoting for git commands
   (cmd.exe-safe), forward-slash path output from search/find/index, and
   `gradlew.bat` detection.
