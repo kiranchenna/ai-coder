@@ -8,7 +8,8 @@
   Resumable (`dev` / `dev status` / `dev revisit <phase>`). `dev build` turns the
   design into code: proposes a file plan (you control it via build_plan.json),
   generates file-by-file grounded in the spec + conventions, and verifies.
-  Auto-resync on decision change coming next.
+  `dev revisit <phase>` re-opens a decision and, if it changed, auto-resyncs the
+  code (diffs old→new and runs an agentic apply+verify task).
 - **Windows robustness** — cross-platform shell quoting for git commands
   (cmd.exe-safe), forward-slash path output from search/find/index, and
   `gradlew.bat` detection.

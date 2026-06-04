@@ -27,6 +27,13 @@ console = Console()
 _STATUS_ICON = {"done": "✅", "skipped": "⏭", "in_progress": "🔄", "pending": "○"}
 
 
+def _decision_section(text: str) -> str:
+    """Extract the '## Decision' body of an artifact (or the whole text)."""
+    import re
+    m = re.search(r"## Decision\s*\n+(.*?)\n+---", text, re.DOTALL)
+    return m.group(1).strip() if m else text.strip()
+
+
 def _stream(messages, precise: bool = False) -> str:
     """Stream a conversational model response to the terminal; return the text."""
     from core.model import get_chat_model
@@ -227,6 +234,50 @@ class DevSession:
         console.print(Panel("\n".join(lines),
                             title=f"[bold magenta]🧭 Developer Mode — {self.state.get('idea','')[:50]}[/bold magenta]",
                             subtitle="[dim]docs/dev/[/dim]", border_style="magenta"))
+
+    def _build_exists(self) -> bool:
+        bp = self.dir / "build_plan.json"
+        if not bp.exists():
+            return False
+        try:
+            plan = json.loads(bp.read_text(encoding="utf-8"))
+            return any(f.get("status") == "done" for f in plan.get("files", []))
+        except Exception:
+            return False
+
+    def revisit(self, phase_id: str) -> None:
+        """Re-run one phase to change its decision, then auto-resync the code if it changed."""
+        spec = PHASES_BY_ID.get(phase_id)
+        if not spec:
+            console.print(f"[yellow]Unknown phase '{phase_id}'. Phases: "
+                          f"{', '.join(PHASES_BY_ID)}[/yellow]")
+            return
+
+        old_path = self._artifact_path(spec)
+        old = old_path.read_text(encoding="utf-8", errors="replace") if old_path.exists() else ""
+
+        console.print(Rule(f"[bold]Revisiting: {spec.title}[/bold]"))
+        self._set_status(spec.id, "in_progress")
+        result = self._run_phase(spec)
+        self._set_status(spec.id, "done" if result == "done"
+                         else ("pending" if result == "pause" else "skipped"))
+        if result != "done":
+            return
+
+        new = old_path.read_text(encoding="utf-8", errors="replace") if old_path.exists() else ""
+        if not old or not self._build_exists():
+            return
+
+        old_dec, new_dec = _decision_section(old), _decision_section(new)
+        if old_dec.strip() == new_dec.strip():
+            console.print("[dim]Decision unchanged — no resync needed.[/dim]")
+            return
+
+        console.print()
+        if Confirm.ask(f"The {spec.title} decision changed. Auto-resync the code to match?",
+                       default=True):
+            from devmode.resync import resync
+            resync(self.workspace, spec.title, old_dec, new_dec)
 
     def run(self, resume: bool = False, only: str | None = None) -> None:
         if not self.state.get("idea") and not resume:

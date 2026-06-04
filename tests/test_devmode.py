@@ -102,3 +102,50 @@ def test_build_generates_pending_files(tmp_path, monkeypatch):
     assert (tmp_path / "app.py").read_text().startswith("# app.py")
     assert gen == ["app.py"]                        # the done file was skipped
     assert all(f["status"] == "done" for f in b._load_plan()["files"])
+
+
+# ─── Auto-resync (revisit) ────────────────────────────────────────────────────
+
+import json as _json
+
+
+def _setup_built_session(tmp_path, monkeypatch, old_decision, new_decision):
+    monkeypatch.setattr(S.Confirm, "ask", lambda *a, **k: True)
+    ds = DevSession(tmp_path, "x")
+    spec = PHASES_BY_ID["requirements"]
+    ds._write_artifact(spec, old_decision, "t")     # old artifact on disk
+    (tmp_path / "docs" / "dev" / "build_plan.json").write_text(
+        _json.dumps({"files": [{"path": "a.py", "status": "done"}]}))
+    # revisit re-runs the phase → writes the new decision
+    monkeypatch.setattr(ds, "_run_phase",
+                        lambda s: (ds._write_artifact(s, new_decision, "t"), "done")[1])
+    calls = {}
+    monkeypatch.setattr("devmode.resync.resync",
+                        lambda ws, title, old, new: calls.update(title=title, old=old, new=new))
+    return ds, calls
+
+
+def test_revisit_resyncs_when_decision_changes(tmp_path, monkeypatch):
+    ds, calls = _setup_built_session(tmp_path, monkeypatch,
+                                     "hello returns 'Hello, X!'", "hello returns 'Hi, X!'")
+    ds.revisit("requirements")
+    assert calls.get("title") == "Requirements"
+    assert "Hello" in calls["old"] and "Hi" in calls["new"]
+
+
+def test_revisit_no_resync_when_unchanged(tmp_path, monkeypatch):
+    ds, calls = _setup_built_session(tmp_path, monkeypatch, "same decision", "same decision")
+    ds.revisit("requirements")
+    assert calls == {}                              # no change → no resync
+
+
+def test_revisit_no_resync_without_a_build(tmp_path, monkeypatch):
+    monkeypatch.setattr(S.Confirm, "ask", lambda *a, **k: True)
+    ds = DevSession(tmp_path, "x")
+    ds._write_artifact(PHASES_BY_ID["requirements"], "old", "t")
+    monkeypatch.setattr(ds, "_run_phase",
+                        lambda s: (ds._write_artifact(s, "new", "t"), "done")[1])
+    calls = {}
+    monkeypatch.setattr("devmode.resync.resync", lambda *a: calls.update(hit=True))
+    ds.revisit("requirements")                       # no build_plan.json → skip resync
+    assert calls == {}

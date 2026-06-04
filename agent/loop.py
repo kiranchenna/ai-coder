@@ -566,7 +566,7 @@ def run_agent_repl(workspace: Path) -> None:
                     from devmode.build import Builder
                     Builder(workspace, ds).build()
                 elif arg.startswith("revisit "):
-                    ds.run(only=arg.split(maxsplit=1)[1].strip())
+                    ds.revisit(arg.split(maxsplit=1)[1].strip())
                 else:
                     ds.run(resume=True)
                 continue
