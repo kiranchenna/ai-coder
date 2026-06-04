@@ -621,6 +621,146 @@ class DevSession:
         except Exception:
             return False
 
+    # ── Resolve: turn review findings into design fixes + code resync ───────────
+
+    _SEV_RANK = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+
+    def _design_context(self) -> list[tuple[str, str]]:
+        """Compact (phase_id, digest) pairs for every decided phase."""
+        out = []
+        for p in PHASES:
+            if p.target != "doc" or p.kind == "review":
+                continue
+            if (self.dir / p.filename).exists():
+                d = self._phase_digest(p.id)
+                if d:
+                    out.append((p.id, d))
+        return out
+
+    def _review_findings_structured(self) -> list[dict]:
+        """Holistic cross-phase review → structured, fixable findings."""
+        ctx = self._design_context()
+        if len(ctx) < 2:
+            return []
+        ids = [pid for pid, _ in ctx]
+        blocks = "\n\n".join(f"### {pid} — {PHASES_BY_ID[pid].title}\n{d}" for pid, d in ctx)
+        system = (
+            "You are a senior reviewer doing a final cross-phase check of a software design. "
+            "Find real CONTRADICTIONS and critical GAPS between phases — e.g. a schema that "
+            "stores a private key/plaintext server-side despite an end-to-end-encryption "
+            "promise, a datastore or auth mechanism that disagrees with an earlier phase, or a "
+            "required feature with no schema/endpoint/flow. For each issue, pick the SINGLE "
+            "phase whose decision should be edited to fix it.\n"
+            f"Valid phase ids: {ids}\n"
+            'Output ONLY a JSON array: [{"severity":"HIGH|MEDIUM|LOW","target":"<phase id>",'
+            '"issue":"what is wrong","fix":"the concrete change to make"}]. '
+            "If the design is consistent, output []."
+        )
+        from core.model import balanced_json_arrays
+        try:
+            raw = _stream([SystemMessage(content=system),
+                           HumanMessage(content=f"# Phase decisions\n{blocks}\n\nReturn the findings JSON.")],
+                          precise=True)
+        except Exception:  # noqa: BLE001
+            return []
+        findings: list[dict] = []
+        for span in balanced_json_arrays(raw):
+            try:
+                data = json.loads(span)
+            except Exception:
+                continue
+            if isinstance(data, list):
+                for f in data:
+                    if (isinstance(f, dict) and f.get("target") in PHASES_BY_ID
+                            and f.get("issue") and f.get("fix")):
+                        f["severity"] = str(f.get("severity", "MEDIUM")).upper()
+                        findings.append(f)
+                if findings:
+                    break
+        findings.sort(key=lambda f: self._SEV_RANK.get(f["severity"], 1))
+        return findings
+
+    def _apply_fix(self, finding: dict) -> bool:
+        """Rewrite the target phase's decision to resolve a finding, then resync code."""
+        import re
+        spec = PHASES_BY_ID[finding["target"]]
+        path = self._artifact_path(spec)
+        if not path.exists():
+            console.print(f"[yellow]No artifact for {spec.title} to fix.[/yellow]")
+            return False
+        old_full = path.read_text(encoding="utf-8", errors="replace")
+        old_dec = _decision_section(old_full)
+        system = (
+            f"You are a senior {spec.role}. You are given the current {spec.title} decision, "
+            f"then a problem and the required change. Rewrite the decision so the problem is "
+            f"resolved, changing as LITTLE else as possible and keeping all unaffected content "
+            f"intact. Respond with ONLY the corrected decision in clean Markdown — do NOT "
+            f"restate the problem, the required change, or any of these instructions."
+        )
+        prompt = (f"CURRENT DECISION:\n{old_dec}\n\n"
+                  f"PROBLEM: {finding['issue']}\nREQUIRED CHANGE: {finding['fix']}\n\n"
+                  f"Now output the corrected decision only.")
+        console.print(Rule(f"[dim]Revising {spec.title} to fix: {finding['issue'][:70]}[/dim]"))
+        new_dec = _stream([SystemMessage(content=system), HumanMessage(content=prompt)],
+                          precise=True).strip()
+        # Strip a leading "Corrected decision:" lead-in if the model adds one.
+        new_dec = re.sub(r"^(corrected decision|here.{0,20}decision)\s*:?\s*\n+", "",
+                         new_dec, flags=re.IGNORECASE)
+        if not new_dec or new_dec == old_dec.strip():
+            console.print("[dim]No change produced — skipping.[/dim]")
+            return False
+        # Echo guard: a small model sometimes parrots the prompt back instead of revising.
+        if any(marker in new_dec for marker in ("REQUIRED CHANGE:", "PROBLEM:", "CURRENT DECISION:")):
+            console.print("[yellow]The model echoed the request instead of revising — skipping. "
+                          f"Use 'dev revisit {spec.id}' to change this phase.[/yellow]")
+            return False
+        # Guard: a fix that drops most of a large (decomposed) decision is a
+        # truncation, not a fix — don't let it silently shrink the spec.
+        if len(new_dec) < len(old_dec.strip()) * 0.6:
+            console.print("[yellow]The rewrite is much shorter than the original — it likely "
+                          "dropped content. Skipping; use 'dev revisit "
+                          f"{spec.id}' to change this phase safely.[/yellow]")
+            return False
+        if not Confirm.ask(f"Apply this fix to the {spec.title} decision?", default=True):
+            return False
+        # Preserve the original discussion transcript if present.
+        m = re.search(r"<details><summary>Discussion</summary>\n+(.*?)\n+</details>",
+                      old_full, re.DOTALL)
+        transcript = (m.group(1).strip() if m else "") + f"\n\n_Fix applied: {finding['issue']}_"
+        self._write_artifact(spec, new_dec, transcript)
+        self.state.setdefault("digests", {}).pop(spec.id, None)  # invalidate stale digest
+        self._save()
+        console.print(f"  [green]✔[/green] {spec.title} decision updated.")
+        if self._build_exists():
+            from devmode.resync import resync
+            resync(self.workspace, spec.title, old_dec, new_dec)
+        return True
+
+    def resolve(self) -> None:
+        """Review the design for contradictions/gaps and fix them (design + code resync)."""
+        console.print(Rule("[bold magenta]Resolve — cross-phase review & fix[/bold magenta]"))
+        console.print("[dim]🔎 Reviewing all phase decisions for contradictions…[/dim]")
+        findings = self._review_findings_structured()
+        if not findings:
+            console.print("[green]✓ No cross-phase contradictions found.[/green]")
+            return
+        console.print(f"[yellow]Found {len(findings)} issue(s).[/yellow]\n")
+        fixed = 0
+        for i, f in enumerate(findings, 1):
+            console.print(Panel(
+                f"[bold]{f['severity']}[/bold] → fix in [bold cyan]{f['target']}[/bold cyan]\n\n"
+                f"[bold]Issue:[/bold] {f['issue']}\n[bold]Proposed fix:[/bold] {f['fix']}",
+                title=f"[bold]Finding {i}/{len(findings)}[/bold]", border_style="yellow"))
+            if not Confirm.ask(f"Apply the proposed fix to {f['target']}?", default=True):
+                console.print("[dim]Skipped.[/dim]")
+                continue
+            if self._apply_fix(f):
+                fixed += 1
+        console.print()
+        console.print(Panel(f"Resolved {fixed}/{len(findings)} issue(s).\n"
+                            "[dim]Re-run 'dev resolve' to re-check, or 'dev build' to (re)generate code.[/dim]",
+                            title="[bold green]Resolve complete[/bold green]", border_style="green"))
+
     def revisit(self, phase_id: str) -> None:
         """Re-run one phase to change its decision, then auto-resync the code if it changed."""
         spec = PHASES_BY_ID.get(phase_id)

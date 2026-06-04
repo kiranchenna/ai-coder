@@ -295,10 +295,12 @@ dev status            # show phase progress
 dev build             # turn the design into code — proposes a file plan you can
                       #   edit (build_plan.json), then generates file-by-file and verifies
 dev revisit <phase>   # re-open a decision; if it changes, auto-resync the code to match
+dev resolve           # cross-phase review → fix the design contradictions → resync code
 ```
 
 - **`dev build`** proposes the folder/file structure from the design + your conventions. **Edit `docs/dev/build_plan.json`** (paths, order, naming) and re-run to use your exact structure. It then generates each file — grounded in the spec + `AICODER.md` — shown as a diff, **resumable per file**, and runs your tests at the end.
 - **`dev revisit <phase>`** lets you change any decision later. If the decision changed and code was built, AICoder **auto-resyncs**: it diffs old→new and runs an agentic task to propagate the change through the code, then verifies.
+- **`dev resolve`** reviews every phase together, lists the cross-phase contradictions (e.g. a schema that stores plaintext despite an end-to-end-encryption promise, or an auth mechanism that disagrees with the security phase), and for each one you accept it **rewrites the offending phase's decision and auto-resyncs the code**. It catches blunt contradictions reliably; subtle ones a small local model can't reason through may still need a manual `dev revisit`.
 
 ### Greenfield and existing repos
 

@@ -369,6 +369,91 @@ def test_consistency_check_off(tmp_path, monkeypatch):
     assert out == "" and called == []                         # disabled → no model call
 
 
+def test_review_findings_structured_parses_and_sorts(tmp_path, monkeypatch):
+    import devmode.session as S
+    ds = DevSession(tmp_path, "an E2E messaging app")
+    # two decided phases (need >= 2 for a cross-phase review)
+    ds._write_artifact(PHASES_BY_ID["security"], "Server never sees plaintext.", "t")
+    ds._write_artifact(PHASES_BY_ID["data_model"], "Devices table stores private_key.", "t")
+    ds.state["digests"] = {"security": "no plaintext on server",
+                           "data_model": "stores private_key server-side"}
+
+    payload = (
+        '[{"severity":"LOW","target":"data_model","issue":"minor","fix":"x"},'
+        ' {"severity":"HIGH","target":"data_model","issue":"private key on server",'
+        '"fix":"keep keys client-side"},'
+        ' {"severity":"MEDIUM","target":"bogus_phase","issue":"y","fix":"z"}]'  # invalid target dropped
+    )
+    monkeypatch.setattr(S, "_stream", lambda msgs, precise=False: payload)
+    out = ds._review_findings_structured()
+    assert [f["severity"] for f in out] == ["HIGH", "LOW"]      # sorted; bogus target dropped
+    assert out[0]["target"] == "data_model"
+
+
+def test_apply_fix_rewrites_artifact_and_resyncs(tmp_path, monkeypatch):
+    import devmode.session as S
+    from core.config import get_config
+    get_config().raw()["files"]["confirmation"] = "never"
+
+    ds = DevSession(tmp_path, "x")
+    ds._write_artifact(PHASES_BY_ID["data_model"],
+                       "Devices table stores private_key server-side.", "orig transcript")
+    ds.state["digests"] = {"data_model": "old digest"}
+
+    monkeypatch.setattr(S.Confirm, "ask", lambda *a, **k: True)
+    monkeypatch.setattr(S, "_stream",
+                        lambda msgs, precise=False: "Devices table stores ONLY public keys; private keys stay on-device.")
+    monkeypatch.setattr(ds, "_build_exists", lambda: True)
+    resynced = {}
+    import devmode.resync as R
+    monkeypatch.setattr(R, "resync",
+                        lambda ws, title, old, new: resynced.update(title=title, new=new))
+
+    ok = ds._apply_fix({"severity": "HIGH", "target": "data_model",
+                        "issue": "private key on server", "fix": "keep keys client-side"})
+    assert ok is True
+    art = (tmp_path / "docs" / "dev" / "06_data_model.md").read_text()
+    assert "stay on-device" in art                              # artifact rewritten
+    assert "orig transcript" in art                             # original transcript preserved
+    assert resynced["title"] == "Data Model & DB Schema"        # code resync triggered
+    assert "data_model" not in ds.state.get("digests", {})      # stale digest invalidated
+
+
+def test_apply_fix_rejects_truncating_rewrite(tmp_path, monkeypatch):
+    import devmode.session as S
+    ds = DevSession(tmp_path, "x")
+    big = "## Schema\n" + ("- a detailed field line that carries real content\n" * 60)
+    ds._write_artifact(PHASES_BY_ID["data_model"], big, "t")
+    monkeypatch.setattr(S.Confirm, "ask", lambda *a, **k: True)
+    monkeypatch.setattr(S, "_stream", lambda msgs, precise=False: "Tiny rewrite.")  # truncation
+    monkeypatch.setattr(ds, "_build_exists", lambda: True)
+    import devmode.resync as R
+    hit = {}
+    monkeypatch.setattr(R, "resync", lambda *a, **k: hit.setdefault("x", 1))
+    ok = ds._apply_fix({"severity": "HIGH", "target": "data_model", "issue": "i", "fix": "f"})
+    assert ok is False and "x" not in hit                      # guard blocked the shrink + resync
+    assert "detailed field line" in (tmp_path / "docs" / "dev" / "06_data_model.md").read_text()
+
+
+def test_apply_fix_no_resync_without_build(tmp_path, monkeypatch):
+    import devmode.session as S
+    from core.config import get_config
+    get_config().raw()["files"]["confirmation"] = "never"
+
+    ds = DevSession(tmp_path, "x")
+    ds._write_artifact(PHASES_BY_ID["security"], "Use sessions.", "t")
+    monkeypatch.setattr(S.Confirm, "ask", lambda *a, **k: True)
+    monkeypatch.setattr(S, "_stream", lambda msgs, precise=False: "Use JWT tokens instead.")
+    monkeypatch.setattr(ds, "_build_exists", lambda: False)
+    called = {}
+    import devmode.resync as R
+    monkeypatch.setattr(R, "resync", lambda *a, **k: called.setdefault("hit", True))
+
+    ok = ds._apply_fix({"severity": "HIGH", "target": "security",
+                        "issue": "auth", "fix": "use jwt"})
+    assert ok is True and "hit" not in called                  # no build → no resync
+
+
 def test_phases_have_decompose_set():
     assert PHASES_BY_ID["data_model"].decompose == "entity"
     assert PHASES_BY_ID["api"].decompose == "resource"

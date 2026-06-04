@@ -14,7 +14,10 @@
   cross-phase consistency check digests the new decision and flags contradictions
   with earlier ones (auth/tech/datastore mismatches, dropped scope, server-side
   secrets vs an E2E promise), logged to `docs/dev/consistency_notes.md` (config
-  `devmode.consistency_check`).
+  `devmode.consistency_check`). `dev resolve` makes those findings actionable: it
+  runs a holistic cross-phase review, and for each contradiction you accept it
+  rewrites the offending phase's decision (with anti-truncation and echo guards)
+  and auto-resyncs the code — moving the design toward self-correcting.
 - **Developer Mode roles** — added Product Manager (vision/MVP), Market Analyst
   (competitors), Technical Writer (docs plan), and a Design Reviewer that
   critiques all decisions for consistency/gaps/risks before the build (14 roles).

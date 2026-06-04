@@ -406,7 +406,7 @@ def _handle_command(raw: str, session: "AgentSession", workspace: Path) -> None:
         console.print(
             Panel(
                 "[bold]develop <idea>[/bold] Developer Mode: role-driven SDLC design → build\n"
-                "[bold]dev[/bold]           resume Developer Mode ('dev status' / 'dev build' / 'dev revisit <phase>')\n"
+                "[bold]dev[/bold]           resume Developer Mode ('dev status' / 'dev build' / 'dev revisit <phase>' / 'dev resolve')\n"
                 "[bold]plan <goal>[/bold]   decompose a goal into tasks and build it\n"
                 "[bold]resume[/bold]        continue an in-progress plan\n"
                 "[bold]/model [name][/bold] show or switch the model for this session\n"
@@ -567,6 +567,8 @@ def run_agent_repl(workspace: Path) -> None:
                     Builder(workspace, ds).build()
                 elif arg.startswith("revisit "):
                     ds.revisit(arg.split(maxsplit=1)[1].strip())
+                elif arg.startswith("resolve"):
+                    ds.resolve()
                 else:
                     ds.run(resume=True)
                 continue
