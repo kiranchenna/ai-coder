@@ -205,10 +205,17 @@ class DevSession:
             f"project, one SDLC phase at a time. This phase: {spec.title}.",
             f"Project idea: {self.state.get('idea') or '(see prior decisions)'}",
             f"Your goal: {spec.goal} Specifically decide: {spec.focus}.",
-            "Be concrete and senior: propose a clear recommendation with brief rationale, "
-            "ask focused questions only where you genuinely need the developer's decision, "
-            "and adapt to their answers. Keep it tight — they are experienced.",
+            "Be concrete and SENIOR: address the genuinely hard, defining parts of THIS "
+            "specific product — not generic boilerplate. Name specific technologies, "
+            "protocols, patterns, and current stable versions. Cover ALL of the requested "
+            "scope; do not silently defer the hard features. Propose a clear recommendation "
+            "with brief rationale, and ask focused questions only where you truly need the "
+            "developer's decision. They are experienced — keep it tight but deep.",
         ]
+        if spec.must_cover:
+            parts += ["", "You MUST explicitly address each of these (skip one only if it "
+                      "genuinely does not apply, and say why):",
+                      *(f"- {item}" for item in spec.must_cover)]
         if repo:
             parts += ["", "# Existing codebase — build on and MATCH this (brownfield)", repo]
         if docs:
@@ -279,14 +286,40 @@ class DevSession:
         # (unreachable) transcript joined by caller via _last_transcript
 
     def _summarize(self, spec: PhaseSpec, messages: list) -> str:
-        prompt = (
+        from core.config import get_config
+
+        draft_prompt = (
             f"Summarize this {spec.title} discussion into a clean, structured Markdown "
             f"record of the DECISIONS made about: {spec.focus}. Use headings, bullets, and "
             f"tables where useful. This is the permanent spec for this phase — be precise "
             f"and complete, no fluff."
         )
-        out = _stream(list(messages) + [HumanMessage(content=prompt)], precise=True)
-        return out.strip()
+        base = list(messages) + [HumanMessage(content=draft_prompt)]
+        draft = _stream(base, precise=True).strip()
+
+        if not draft or not get_config().get("devmode", "reflect", default=True):
+            return draft
+
+        # Reflection: a small model improves a concrete draft far better than it
+        # writes a perfect one first-shot. One critique-and-revise pass.
+        console.print(Rule("[dim]🔁 Refining the decision (critique + revise)…[/dim]"))
+        improve_prompt = (
+            f"Above is a DRAFT {spec.title} decision for: {self.state.get('idea', '')}.\n"
+            f"As a senior {spec.role}, critique it and output an IMPROVED, complete version. "
+            f"Specifically:\n"
+            f"- Address the genuinely HARD, defining parts of THIS product that the draft "
+            f"missed or treated generically.\n"
+            f"- Name concrete technologies, protocols, patterns, and current stable versions.\n"
+            f"- Ensure it fully covers: {spec.focus}, and is consistent with the requirements "
+            f"and earlier decisions.\n"
+            + ("".join(f"- It MUST explicitly cover: {item}\n" for item in spec.must_cover))
+            + f"Output ONLY the improved decision in clean Markdown — no preamble."
+        )
+        improved = _stream(
+            base + [AIMessage(content=draft), HumanMessage(content=improve_prompt)],
+            precise=True,
+        ).strip()
+        return improved or draft
 
     # ── Phase runner ───────────────────────────────────────────────────────────
 

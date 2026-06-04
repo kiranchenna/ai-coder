@@ -101,6 +101,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         #   PostToolUse:  [{matcher: "write_file|edit_file", command: "ruff format ."}]
         #   Stop:         [{command: "notify-send done"}]
     },
+    "devmode": {
+        # Developer Mode: refine each phase decision with a draft→critique→revise
+        # pass (better depth from a small model, at the cost of an extra call).
+        "reflect": True,
+    },
 }
 
 

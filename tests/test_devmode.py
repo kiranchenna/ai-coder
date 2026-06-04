@@ -194,6 +194,29 @@ def test_new_roles_and_review_phase_present():
     assert PHASES[-1].kind == "review"               # review runs last (before build)
 
 
+def test_summarize_reflection_does_draft_then_improve(tmp_path, monkeypatch):
+    from core.config import get_config
+    get_config().raw().setdefault("devmode", {})["reflect"] = True
+    calls = []
+    monkeypatch.setattr(S, "_stream",
+                        lambda msgs, precise=False: (calls.append(1),
+                                                     "DRAFT" if len(calls) == 1 else "IMPROVED")[1])
+    ds = DevSession(tmp_path, "x")
+    out = ds._summarize(PHASES_BY_ID["requirements"], [])
+    assert len(calls) == 2 and out == "IMPROVED"      # draft then refine
+
+
+def test_summarize_single_pass_when_reflection_off(tmp_path, monkeypatch):
+    from core.config import get_config
+    get_config().raw().setdefault("devmode", {})["reflect"] = False
+    calls = []
+    monkeypatch.setattr(S, "_stream", lambda msgs, precise=False: (calls.append(1), "DRAFT")[1])
+    ds = DevSession(tmp_path, "x")
+    out = ds._summarize(PHASES_BY_ID["requirements"], [])
+    get_config().raw()["devmode"]["reflect"] = True   # restore for other tests
+    assert len(calls) == 1 and out == "DRAFT"
+
+
 def test_review_artifact_excluded_from_design_context(tmp_path):
     ds = DevSession(tmp_path, "x")
     review = PHASES_BY_ID["review"]

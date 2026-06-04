@@ -22,6 +22,7 @@ class PhaseSpec:
     target: str = "doc"  # "doc" → docs/dev/<filename> | "conventions" → AICODER.md
     research: bool = False   # research current versions/best-practices first
     kind: str = "discussion"  # "discussion" | "review"
+    must_cover: tuple[str, ...] = ()  # senior checklist the model is forced to address
 
 
 PHASES: list[PhaseSpec] = [
@@ -127,4 +128,84 @@ PHASES: list[PhaseSpec] = [
     ),
 ]
 
+# Senior "you MUST explicitly address each of these" checklists. A small model
+# doesn't know what the hard/defining parts of a domain are — so we tell it.
+_MUST_COVER: dict[str, tuple[str, ...]] = {
+    "product": (
+        "the concrete differentiation vs incumbents (why would anyone switch?)",
+        "the business/monetization model",
+        "the single riskiest assumption",
+    ),
+    "competitors": (
+        "3–5 named competitors with concrete strengths AND gaps",
+        "a clear, specific differentiation thesis (not 'better UX')",
+    ),
+    "requirements": (
+        "EVERY feature the user asked for — do not silently drop or defer any",
+        "explicit non-functional needs (scale, latency, privacy)",
+        "MVP vs later, with a one-line rationale for each cut",
+    ),
+    "architecture": (
+        "if the app is real-time/messaging, the real-time backbone — a message broker "
+        "(e.g. Kafka/RabbitMQ/NATS) AND a websocket/realtime gateway",
+        "each data store + cache and what it's for",
+        "the CURRENT stable version of each technology (never an EOL version)",
+        "how each core feature maps to a specific component",
+    ),
+    "security": (
+        "if the product promises end-to-end encryption, the ACTUAL E2E scheme — name the "
+        "protocol (e.g. Signal / double-ratchet), the key exchange, and per-device keys; "
+        "state explicitly that the server must never see plaintext",
+        "the authentication AND authorization model",
+        "secrets management",
+        "the top 3 threats and their mitigations",
+        "realistic throughput targets and rate limiting",
+    ),
+    "data_model": (
+        "an entity/table for EVERY noun in the requirements",
+        "if E2E, store ciphertext (never plaintext) and add device/key tables",
+        "membership tables for groups and per-recipient delivery/read state",
+        "primary/foreign keys, indexes, and the migration approach",
+    ),
+    "api": (
+        "if real-time, the websocket/event contracts (event names + payloads), not just REST",
+        "a single consistent error format",
+        "pagination/filtering for list endpoints",
+        "auth required per endpoint",
+    ),
+    "app_flow": (
+        "the core DOMAIN flow end-to-end (for messaging: compose→encrypt→deliver→fan-out→"
+        "offline-queue→receipts→multi-device-sync), not just login/registration",
+        "business rules and validations",
+        "failure and edge cases",
+    ),
+    "ui_ux": (
+        "a screen for EVERY major feature — omit none",
+        "navigation / information architecture",
+        "loading, empty, and error states",
+    ),
+    "testing": (
+        "what to test for the HARD parts of THIS product specifically (e.g. crypto, "
+        "real-time delivery, multi-device, load)",
+        "the test pyramid with concrete tools",
+        "CI gating",
+    ),
+    "deployment": (
+        "infra that MATCHES the architecture (e.g. orchestration for microservices) and the "
+        "stated scale target",
+        "CI/CD pipeline",
+        "config/secrets per environment",
+        "observability (logs/metrics/traces)",
+    ),
+    "documentation": (
+        "the doc set, each with its audience and outline",
+    ),
+    "conventions": (
+        "concrete, build-ready rules: the exact folder structure, file naming, "
+        "function/variable naming, formatting, error handling, and test layout",
+    ),
+}
+
+import dataclasses as _dc  # noqa: E402
+PHASES = [_dc.replace(p, must_cover=_MUST_COVER.get(p.id, ())) for p in PHASES]
 PHASES_BY_ID = {p.id: p for p in PHASES}
