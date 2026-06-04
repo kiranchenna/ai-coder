@@ -102,10 +102,10 @@ class DevSession:
             else (self.dir / spec.filename)
 
     def _prior_artifacts(self) -> str:
-        """Concatenate completed doc artifacts to ground later phases."""
+        """Concatenate completed decision artifacts to ground later phases."""
         parts = []
         for p in PHASES:
-            if p.target != "doc":
+            if p.target != "doc" or p.kind == "review":
                 continue
             path = self.dir / p.filename
             if path.exists():
@@ -290,7 +290,37 @@ class DevSession:
 
     # ── Phase runner ───────────────────────────────────────────────────────────
 
+    def _run_review(self, spec: PhaseSpec) -> str:
+        """The Design Reviewer critiques the other phases' decisions (no discussion)."""
+        artifacts = self._prior_artifacts()
+        if not artifacts.strip():
+            console.print("[yellow]Nothing to review yet — run the design phases first.[/yellow]")
+            return "skip"
+        console.print(Rule(f"[bold magenta]{spec.role} — {spec.title}[/bold magenta]"))
+        system = (
+            f"You are a {spec.role} reviewing the design for an experienced developer. "
+            f"Critically review the decisions below. Check: {spec.focus}. Output a concise "
+            f"findings list — each finding with a severity (HIGH/MEDIUM/LOW), the phase it "
+            f"concerns, and a concrete recommendation. Be direct; if it's solid, say so."
+        )
+        findings = _stream(
+            [SystemMessage(content=system),
+             HumanMessage(content=f"# Design decisions to review\n{artifacts[:8000]}\n\n"
+                                  f"Produce the review findings.")],
+            precise=True,
+        )
+        path = self._artifact_path(spec)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        path.write_text(f"# Design Review\n_Reviewed: {ts}_\n\n{findings.strip()}\n", encoding="utf-8")
+        console.print(f"\n  [green]✔[/green] Review saved → "
+                      f"[bold]{path.relative_to(self.workspace)}[/bold]")
+        console.print("[dim]Address issues with 'dev revisit <phase>', then 'dev build'.[/dim]")
+        return "done"
+
     def _run_phase(self, spec: PhaseSpec) -> str:
+        if spec.kind == "review":
+            return self._run_review(spec)
         while True:  # retry loop for 'revise'
             transcript_msgs: list = []
             result, messages = self._discuss(spec)

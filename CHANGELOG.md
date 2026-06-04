@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- **Developer Mode roles** — added Product Manager (vision/MVP), Market Analyst
+  (competitors), Technical Writer (docs plan), and a Design Reviewer that
+  critiques all decisions for consistency/gaps/risks before the build (14 roles).
 - **Developer Mode** — `develop <idea>` runs a role-driven SDLC
   design: Requirements → Architecture → Security/NFR → Data model → API →
   App flow → UI/UX → Testing → Deployment → Conventions, each a full discussion

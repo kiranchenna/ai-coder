@@ -255,18 +255,22 @@ It walks these phases, each a **full back-and-forth discussion** with a role per
 
 | # | Phase | Role |
 |---|---|---|
-| 1 | Requirements | Requirements Analyst |
-| 2 | Architecture & Tech Stack | Software Architect |
-| 3 | Security & Non-Functional | Security/Platform Engineer |
-| 4 | Data Model & DB Schema | Database Architect |
-| 5 | API & Interface Contracts | Backend Engineer |
-| 6 | Application Flow & Business Logic | Domain Engineer |
-| 7 | UI/UX — Screens & Behaviour | Frontend/UX Engineer |
-| 8 | Testing Strategy | QA Engineer |
-| 9 | Deployment & Infrastructure | DevOps Engineer |
-| 10 | Coding Conventions | Tech Lead → writes `AICODER.md` |
+| 1 | Product Vision | Product Manager |
+| 2 | Market & Competitors | Market Analyst |
+| 3 | Requirements | Requirements Analyst |
+| 4 | Architecture & Tech Stack | Software Architect |
+| 5 | Security & Non-Functional | Security/Platform Engineer |
+| 6 | Data Model & DB Schema | Database Architect |
+| 7 | API & Interface Contracts | Backend Engineer |
+| 8 | Application Flow & Business Logic | Domain Engineer |
+| 9 | UI/UX — Screens & Behaviour | Frontend/UX Engineer |
+| 10 | Testing Strategy | QA Engineer |
+| 11 | Deployment & Infrastructure | DevOps Engineer |
+| 12 | Documentation Plan | Technical Writer |
+| 13 | Coding Conventions | Tech Lead → writes `AICODER.md` |
+| 14 | Design Review | Design Reviewer (critiques all decisions before build) |
 
-In each phase, type `done` to capture the decision, `skip` to skip, `revise` to restart, or `pause` to stop and resume later.
+In each design phase, type `done` to capture the decision, `skip` to skip, `revise` to restart, or `pause` to stop and resume later. The final **Design Review** doesn't propose a decision — it critiques the others (consistency, gaps, security/scale risks) and points you to `dev revisit <phase>` to fix anything.
 
 ### Artifacts you control
 

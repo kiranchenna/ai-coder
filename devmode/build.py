@@ -50,7 +50,7 @@ class Builder:
     def _spec(self) -> str:
         parts = []
         for p in PHASES:
-            if p.target != "doc":
+            if p.target != "doc" or p.kind == "review":
                 continue
             f = self.dir / p.filename
             if f.exists():
