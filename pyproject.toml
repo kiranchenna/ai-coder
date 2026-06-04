@@ -54,7 +54,7 @@ py-modules = ["cli"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["core*", "tools*", "aicoder_cli*", "agent*", "rag*", "memory*"]
+include = ["core*", "tools*", "aicoder_cli*", "agent*", "rag*", "memory*", "devmode*"]
 
 [tool.setuptools.package-data]
 "*" = ["*.yaml", "*.md"]

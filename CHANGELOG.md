@@ -1,6 +1,12 @@
 # Changelog
 
 ## Unreleased
+- **Developer Mode** (in progress) — `develop <idea>` runs a role-driven SDLC
+  design: Requirements → Architecture → Security/NFR → Data model → API →
+  App flow → UI/UX → Testing → Deployment → Conventions, each a full discussion
+  that captures an editable artifact in `docs/dev/` (conventions → `AICODER.md`).
+  Resumable (`dev` / `dev status` / `dev revisit <phase>`). Build hand-off and
+  auto-resync coming next.
 - **Windows robustness** — cross-platform shell quoting for git commands
   (cmd.exe-safe), forward-slash path output from search/find/index, and
   `gradlew.bat` detection.

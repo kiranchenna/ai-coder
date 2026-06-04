@@ -405,6 +405,8 @@ def _handle_command(raw: str, session: "AgentSession", workspace: Path) -> None:
     if name in ("help", "h", "?"):
         console.print(
             Panel(
+                "[bold]develop <idea>[/bold] Developer Mode: role-driven SDLC design → build\n"
+                "[bold]dev[/bold]           resume Developer Mode ('dev status' / 'dev revisit <phase>')\n"
                 "[bold]plan <goal>[/bold]   decompose a goal into tasks and build it\n"
                 "[bold]resume[/bold]        continue an in-progress plan\n"
                 "[bold]/model [name][/bold] show or switch the model for this session\n"
@@ -545,6 +547,25 @@ def run_agent_repl(workspace: Path) -> None:
         try:
             if user.startswith("/"):
                 _handle_command(user, session, workspace)
+                continue
+            if low == "develop" or low.startswith("develop "):
+                idea = user[len("develop"):].strip()
+                if not idea:
+                    console.print("[yellow]Usage: develop <your project idea>[/yellow]")
+                    continue
+                from devmode.session import DevSession
+                DevSession(workspace, idea).run()
+                continue
+            if low == "dev" or low.startswith("dev "):
+                from devmode.session import DevSession
+                arg = user[3:].strip().lower()
+                ds = DevSession(workspace)
+                if arg.startswith("status"):
+                    ds.show_status()
+                elif arg.startswith("revisit "):
+                    ds.run(only=arg.split(maxsplit=1)[1].strip())
+                else:
+                    ds.run(resume=True)
                 continue
             if low == "resume":
                 planner.run()
