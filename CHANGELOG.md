@@ -16,6 +16,11 @@
     stronger critic model is configured to rank the candidates; otherwise it is
     skipped (with a note) in favour of a single reflected pass. This drops a
     default that cost 3× generation latency for no measured quality gain.
+  - A second eval (`run_consistency_eval`) measures the `consistency_check`
+    lever as contradiction-detection precision/recall on labeled cases — it
+    scored 100% precision / 60% recall (every blatant cross-phase contradiction
+    caught with zero false alarms; subtle ones missed), confirming it belongs in
+    `balanced` as cheap insurance.
   - Docs/code drift fixed: the default embedding model name and the
     context-length fallback now match across README and config, and the
     end-of-design panel points to `dev build` / `dev resolve` (the build

@@ -133,3 +133,70 @@ def test_get_idea_unknown_fixture_raises():
 
     with pytest.raises(SystemExit):
         get_idea("does-not-exist", None)
+
+
+# ── consistency-check detection eval ─────────────────────────────────────────────
+
+from evals.consistency_fixtures import CASES
+from evals.run_consistency_eval import compute_metrics, detect_case, evaluate
+
+
+def test_consistency_fixtures_are_well_formed():
+    # Every case must name a real phase, a valid label, and have balanced classes.
+    labels = []
+    for c in CASES:
+        assert c["new_phase"] in PHASES_BY_ID, c["id"]
+        assert c["label"] in ("contradiction", "clean"), c["id"]
+        assert c["difficulty"] in ("blatant", "subtle"), c["id"]
+        assert c["prior"].strip() and c["new"].strip(), c["id"]
+        labels.append(c["label"])
+    # Need both positives and negatives or precision/recall are meaningless.
+    assert "contradiction" in labels and "clean" in labels
+
+
+def test_detect_case_uses_injected_detector():
+    case = CASES[0]
+    # A detector returning non-empty text means "flagged".
+    assert detect_case(case, detector=lambda spec, p, n: "HIGH — conflict") is True
+    assert detect_case(case, detector=lambda spec, p, n: "NONE handled -> ''") is True  # non-empty
+    assert detect_case(case, detector=lambda spec, p, n: "") is False
+    assert detect_case(case, detector=lambda spec, p, n: "   ") is False
+
+
+def test_compute_metrics_confusion_matrix():
+    results = [
+        {"label": "contradiction", "flagged": True},    # TP
+        {"label": "contradiction", "flagged": False},   # FN
+        {"label": "clean", "flagged": True},            # FP
+        {"label": "clean", "flagged": False},           # TN
+    ]
+    m = compute_metrics(results)
+    assert (m["tp"], m["fn"], m["fp"], m["tn"]) == (1, 1, 1, 1)
+    assert m["precision"] == 0.5  # 1 / (1+1)
+    assert m["recall"] == 0.5     # 1 / (1+1)
+    assert m["accuracy"] == 0.5
+
+
+def test_compute_metrics_perfect_detector():
+    results = [
+        {"label": "contradiction", "flagged": True},
+        {"label": "clean", "flagged": False},
+    ]
+    m = compute_metrics(results)
+    assert m["precision"] == 1.0 and m["recall"] == 1.0 and m["accuracy"] == 1.0
+    assert m["fp"] == 0 and m["fn"] == 0
+
+
+def test_evaluate_majority_vote_and_correctness():
+    # A flaky detector: flags on odd-indexed runs. With repeat=3 → flags 2/3 → flagged.
+    state = {"n": 0}
+
+    def flaky(spec, prior, new):
+        state["n"] += 1
+        return "conflict" if state["n"] % 2 == 1 else ""
+
+    one_case = [c for c in CASES if c["label"] == "contradiction"][:1]
+    results = evaluate(one_case, judge_model="", repeat=3, detector=flaky)
+    assert results[0]["flag_count"] == 2          # runs 1 and 3 flagged
+    assert results[0]["flagged"] is True          # majority of 3
+    assert results[0]["correct"] is True          # label is contradiction
