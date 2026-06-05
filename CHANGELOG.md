@@ -21,6 +21,10 @@
     scored 100% precision / 60% recall (every blatant cross-phase contradiction
     caught with zero false alarms; subtle ones missed), confirming it belongs in
     `balanced` as cheap insurance.
+  - A third eval (`run_build_review_eval`) measures the `build_review` lever by
+    handing the live review pass drafts with planted placeholders — 100% removal
+    (each replaced with a real implementation) with clean drafts left intact. All
+    four quality levers are now backed by a reproducible number.
   - Docs/code drift fixed: the default embedding model name and the
     context-length fallback now match across README and config, and the
     end-of-design panel points to `dev build` / `dev resolve` (the build

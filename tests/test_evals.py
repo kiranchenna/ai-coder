@@ -200,3 +200,66 @@ def test_evaluate_majority_vote_and_correctness():
     assert results[0]["flag_count"] == 2          # runs 1 and 3 flagged
     assert results[0]["flagged"] is True          # majority of 3
     assert results[0]["correct"] is True          # label is contradiction
+
+
+# ── build_review placeholder-removal eval ────────────────────────────────────────
+
+from evals.build_review_fixtures import CASES as BR_CASES
+from evals.run_build_review_eval import (
+    compute_metrics as br_metrics,
+    evaluate as br_evaluate,
+    judge_case,
+    review_case,
+)
+
+
+def test_build_review_fixtures_have_planted_and_clean():
+    expects = [c["expect"] for c in BR_CASES]
+    assert "removed" in expects and "preserved" in expects
+    for c in BR_CASES:
+        assert c["entry"]["path"] and c["draft"].strip() and c["marker"]
+        if c["expect"] == "removed":          # the marker must actually be in the draft
+            assert c["marker"].lower() in c["draft"].lower(), c["id"]
+
+
+def test_judge_case_removed_requires_marker_gone_and_substantial():
+    case = {"expect": "removed", "marker": "TODO", "draft": "def f():\n    # TODO\n    return 1\n"}
+    # marker gone + a real (longer) implementation → good
+    assert judge_case(case, "def f():\n    return validate(x)\n    # extra\n") is True
+    # marker still present → bad
+    assert judge_case(case, "def f():\n    # TODO later\n    return 1\n") is False
+    # marker gone but shrank to a deletion → not a real fix
+    assert judge_case(case, "def f(): ...\n") is False
+
+
+def test_judge_case_preserved_requires_symbol_kept():
+    case = {"expect": "preserved", "marker": "def add", "draft": "def add(a, b):\n    return a + b\n"}
+    assert judge_case(case, "def add(a, b):\n    return a + b\n") is True
+    assert judge_case(case, "def subtract(a, b):\n    return a - b\n") is False  # symbol gone
+
+
+def test_review_case_uses_injected_reviewer():
+    case = BR_CASES[0]
+    captured = {}
+
+    def fake_reviewer(entry, draft, system, prompt):
+        captured["path"] = entry["path"]
+        return "REVIEWED CONTENT"
+
+    out = review_case(case, reviewer=fake_reviewer)
+    assert out == "REVIEWED CONTENT"
+    assert captured["path"] == case["entry"]["path"]
+
+
+def test_br_evaluate_and_metrics_with_perfect_reviewer():
+    # A reviewer that fully implements anything → all 'removed' fixed, clean kept.
+    def perfect(entry, draft, system, prompt):
+        if "add" in draft:                     # the clean case → return unchanged
+            return draft
+        # A real, fully-implemented replacement, comfortably longer than any draft.
+        return "def impl():\n    return real_value()  # fully implemented now\n" * 8
+
+    results = br_evaluate(BR_CASES, repeat=1, reviewer=perfect)
+    m = br_metrics(results)
+    assert m["fix_rate"] == 1.0
+    assert m["preservation_rate"] == 1.0

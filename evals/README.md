@@ -35,6 +35,19 @@ ones. That justifies keeping the lever (cheap, never cries wolf, catches blatant
 cross-phase conflicts) while confirming subtle contradictions still need a manual
 `dev revisit`.
 
+### 3. Placeholder removal — `run_build_review_eval` (does the build-time review work?)
+
+`build_review` is a per-file build-time lever (draft → self-review → fix), so it
+isn't exercised by either design-phase eval. This one hands the live
+`Builder._review_file` drafts containing a planted placeholder (`# TODO`,
+`NotImplementedError`, `pass # stub`) and checks whether the review removed it
+**and replaced it with a real implementation** (a deletion doesn't count) — plus
+a clean control that must survive untouched.
+
+Finding (4 cases, main-model judge): **fix rate 100% (3/3), preservation 100%** —
+the review stripped every planted placeholder with a working implementation and
+left the clean draft intact. Keeps `build_review` on in `balanced`.
+
 ## Usage
 
 Needs Ollama running and the model pulled (same setup as `aicoder`).
@@ -55,6 +68,9 @@ python -m evals.run_eval --judge-model qwen2.5-coder:14b --out results.json
 # 2. Consistency detection — precision/recall on labeled contradiction cases
 python -m evals.run_consistency_eval
 python -m evals.run_consistency_eval --repeat 3 --judge-model qwen2.5-coder:14b
+
+# 3. Build-review — placeholder removal on drafts with planted issues
+python -m evals.run_build_review_eval
 ```
 
 Reading the table: a lever earns its place only if its **Overall** gain is worth
@@ -73,6 +89,9 @@ its added **wall-clock**. A lever sitting near +0.00 is latency you can cut.
 - `consistency_fixtures.py` — labeled cross-phase contradiction cases.
 - `run_consistency_eval.py` — the detection runner; `compute_metrics` /
   `detect_case` are pure and unit-tested, with the detector injectable.
+- `build_review_fixtures.py` — drafts with planted placeholders + a clean control.
+- `run_build_review_eval.py` — the placeholder-removal runner; `compute_metrics`
+  / `judge_case` are pure and unit-tested, with the reviewer injectable.
 
 ## Caveats
 
