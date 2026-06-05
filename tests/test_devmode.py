@@ -41,6 +41,28 @@ def test_prior_artifacts_grounds_later_phases(tmp_path):
     assert "REQ-BODY-MARKER" in ds._prior_artifacts()
 
 
+def test_prior_grounding_prefers_cached_digest(tmp_path):
+    # Grounding for the next phase uses the compact digest, not the full artifact,
+    # so chaining many phases stays within the context budget.
+    ds = DevSession(tmp_path, "x")
+    ds._write_artifact(PHASES_BY_ID["requirements"], "FULL-DECISION-BODY", "t")
+    ds.state.setdefault("digests", {})["requirements"] = "- a key constraint"
+    grounding = ds._prior_grounding()
+    assert "a key constraint" in grounding
+    assert "FULL-DECISION-BODY" not in grounding   # digest replaces the raw body
+
+
+def test_prior_grounding_is_bounded(tmp_path):
+    # Even with several large artifacts, the grounding stays within budget so the
+    # earliest phases are never silently truncated by an overflowing context.
+    ds = DevSession(tmp_path, "x")
+    digests = ds.state.setdefault("digests", {})
+    for pid in ("requirements", "architecture", "data_model"):
+        ds._write_artifact(PHASES_BY_ID[pid], "BODY", "t")
+        digests[pid] = "X" * 20000
+    assert len(ds._prior_grounding(budget=6000)) <= 7000
+
+
 def test_run_marches_through_all_phases(tmp_path, monkeypatch):
     monkeypatch.setattr(S.Confirm, "ask", lambda *a, **k: True)  # auto-yes
     ds = DevSession(tmp_path, "x")
@@ -355,13 +377,30 @@ def test_best_of_generates_candidates_and_judges(tmp_path, monkeypatch):
     from core.config import get_config
     get_config().raw()["devmode"]["best_of"] = True
     get_config().raw()["devmode"]["reflect"] = False   # one call per candidate
+    get_config().raw()["devmode"]["judge_model"] = "judge:big"  # best_of is gated on a judge
     # security has best_of=3 → 3 candidate calls, then 1 judge call picking #2
     seq = iter(["CANDIDATE-1", "CANDIDATE-2", "CANDIDATE-3", "the best is 2"])
-    monkeypatch.setattr(S, "_stream", lambda msgs, precise=False: next(seq))
+    monkeypatch.setattr(S, "_stream", lambda msgs, precise=False, model=None: next(seq))
     ds = DevSession(tmp_path, "x")
     out = ds._summarize(PHASES_BY_ID["security"], [])
     get_config().raw()["devmode"]["reflect"] = True
+    get_config().raw()["devmode"]["judge_model"] = ""
     assert out == "CANDIDATE-2"                         # judge chose candidate 2
+
+
+def test_best_of_gated_off_without_judge_model(tmp_path, monkeypatch):
+    # best_of requested but no judge_model → suppressed; a single reflected pass
+    # runs instead (the eval showed a self-judge added latency without quality).
+    from core.config import get_config
+    get_config().raw()["devmode"]["best_of"] = True
+    get_config().raw()["devmode"]["reflect"] = False
+    get_config().raw()["devmode"]["judge_model"] = ""
+    calls = []
+    monkeypatch.setattr(S, "_stream", lambda msgs, precise=False, model=None: (calls.append(1), "ONE")[1])
+    ds = DevSession(tmp_path, "x")
+    out = ds._summarize(PHASES_BY_ID["security"], [])
+    get_config().raw()["devmode"]["reflect"] = True
+    assert out == "ONE" and len(calls) == 1            # gated → single pass, no judge call
 
 
 def test_best_of_disabled_is_single_pass(tmp_path, monkeypatch):
@@ -381,6 +420,19 @@ def test_judge_best_defaults_to_first_on_unparsable(tmp_path, monkeypatch):
     ds = DevSession(tmp_path, "x")
     out = ds._judge_best(PHASES_BY_ID["security"], ["A", "B", "C"])
     assert out == "A"                                  # no number → safe fallback to first
+
+
+def test_parse_choice_prefers_explicit_candidate():
+    assert S.DevSession._parse_choice("I choose Candidate 2 because…", 3) == 1
+    assert S.DevSession._parse_choice("#3 is best", 3) == 2
+    assert S.DevSession._parse_choice("the answer is number 1", 3) == 0
+
+
+def test_parse_choice_ignores_out_of_range_prose_digits():
+    # "covers all 5 requirements" must not select a nonexistent candidate 5; the
+    # real choice "candidate 2" wins. With only the stray 5, fall back to 0.
+    assert S.DevSession._parse_choice("Candidate 2 covers all 5 requirements", 3) == 1
+    assert S.DevSession._parse_choice("it covers 5 requirements nicely", 3) == 0
 
 
 def test_phases_have_best_of_set():

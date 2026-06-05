@@ -121,8 +121,8 @@ pip install -e ".[dev]"          # dev extras include pytest
 ### Pull the models
 
 ```bash
-ollama pull qwen2.5-coder:7b        # the agent driver
-ollama pull nomic-embed-text-v2-moe # embeddings (web research + documents)
+ollama pull qwen2.5-coder:7b   # the agent driver
+ollama pull nomic-embed-text   # embeddings (web research + documents)
 ```
 
 ### Verify
@@ -145,7 +145,7 @@ The default is **`qwen2.5-coder:7b`** — a good balance of code quality and too
 
 Switch models with `aicoder --model <name>`, the in-session `/model <name>` command, or by editing `~/.aicoder/config.yaml`. Run `aicoder --selftest` after switching to confirm the model supports tool calling.
 
-> **Embeddings** (`nomic-embed-text-v2-moe` by default) are only needed for web research and document ingestion. Alternatives: `bge-m3`, `nomic-embed-text`.
+> **Embeddings** (`nomic-embed-text` by default) are only needed for web research and document ingestion. Alternatives: `bge-m3`, `nomic-embed-text-v2-moe`.
 
 ---
 
@@ -311,7 +311,11 @@ dev resolve           # cross-phase review → fix the design contradictions →
 
 ### How it gets quality from a small model
 
-A local 7B model doesn't know which parts of a domain are hard, and it writes a weak first draft. Developer Mode compensates with **engineering, not a bigger model** — each lever below is independently toggleable in config:
+A local 7B model doesn't know which parts of a domain are hard, and it writes a weak first draft. Developer Mode compensates with **engineering, not a bigger model**. The levers are bundled into a single `devmode.profile` dial — **`fast`** (reflect only), **`balanced`** (the default: reflect + consistency + build-review), or **`thorough`** (everything, including best-of-N). You can still override any individual lever in config.
+
+> **Why these defaults?** A lever ablation (see [`evals/`](evals/)) on the security-design phase found that **`reflect` carries essentially all of the quality gain** (+2.0/10, 70%→100% checklist coverage, for ~20% added time), while **`best_of` only pays with a stronger judge** — with a same-strength self-judge it added latency without quality. So `balanced` keeps reflect and drops best-of, and **`best_of` is gated on `judge_model`**: it only fires when you've configured a stronger critic model to rank the candidates. Run the eval yourself with `python -m evals.run_eval`.
+
+The levers, each independently toggleable:
 
 - **Must-cover checklists** — each phase carries a senior checklist the model is *forced* to address (e.g. Security must name the actual E2E protocol and per-device keys; Architecture must name the real-time backbone), so it can't skip the defining decisions.
 - **Reflection** (`reflect`) — every decision is drafted, then critiqued and revised in a second pass; a small model improves a concrete draft far better than it writes a perfect one first try.
@@ -519,7 +523,7 @@ search:
   timeout_seconds: 10             # per web request
 
 knowledge:
-  embedding_model: "nomic-embed-text-v2-moe"   # "" = use the chat model
+  embedding_model: "nomic-embed-text"   # "" = use the chat model
 
 mcp:
   servers: {}                     # see "MCP servers"
@@ -527,11 +531,11 @@ mcp:
 hooks: {}                         # see "Hooks"
 
 devmode:                          # Developer Mode quality levers (see "How it gets quality")
-  reflect: true                   # draft → critique → revise each decision
-  best_of: true                   # generate N candidates for critical phases, judge the best
-  consistency_check: true         # flag cross-phase contradictions as each phase lands
-  build_review: true              # self-review each generated file before writing it
+  profile: balanced               # fast | balanced | thorough — one dial for the levers below
   judge_model: ""                 # optional stronger model for critic steps only ("" = main model)
+  # Override an individual lever regardless of profile, e.g.:
+  #   best_of: true               # (only fires when judge_model is set — see below)
+  #   consistency_check: false
 ```
 
 - A `.aicoderignore` file (gitignore syntax) in your workspace further excludes files from scanning.
@@ -641,7 +645,7 @@ Being honest about the tradeoffs:
 
 - **"Cannot reach Ollama" / model warnings** — make sure Ollama is running (`ollama serve`) and the model is pulled (`ollama pull qwen2.5-coder:7b`).
 - **`--selftest` says the model can't call tools** — switch to a stronger model (`aicoder --model qwen2.5-coder:7b`).
-- **Web research / `read_document` says it couldn't ingest** — pull an embedding model (`ollama pull nomic-embed-text-v2-moe`).
+- **Web research / `read_document` says it couldn't ingest** — pull an embedding model (`ollama pull nomic-embed-text`).
 - **MCP servers don't load** — install the extra (`pip install "ai-coder[mcp]"`) and check the server `command`/`args` in your config.
 - **Edits get declined / the agent loops** — small models sometimes struggle; rephrase, or switch to a larger model.
 - **See your settings** — `aicoder --config`.

@@ -105,7 +105,7 @@ def get_chat_model(precise: bool = False, tools: Sequence | None = None, model: 
         model=model or cfg.model_name,
         base_url=cfg.model_base_url,
         temperature=cfg.model_temperature_precise if precise else cfg.model_temperature,
-        num_ctx=cfg.model_context_length,
+        num_ctx=cfg.model_context_length,  # default 16384; see DEFAULT_CONFIG
     )
     if tools:
         return llm.bind_tools(list(tools))

@@ -171,12 +171,37 @@ class Builder:
         (self.dir / "build_manifest.json").write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
 
+    def _api_surface(self, completed: list[str]) -> str:
+        """Compact per-file list of symbols already defined across the project, so
+        a later file imports real names instead of guessing (the #1 cause of the
+        compile/test fix-loop churn when only the last few files are shown)."""
+        if not completed:
+            return ""
+        try:
+            from core.code_index import build_symbol_index
+            from core.config import get_config
+            index = build_symbol_index(self.workspace, ignore_dirs=set(get_config().ignore_dirs))
+        except Exception:  # noqa: BLE001
+            return ""
+        by_file: dict[str, list[str]] = {}
+        for name, defs in index.items():
+            for d in defs:
+                by_file.setdefault(d["file"], []).append(f"{d['kind']} {name}")
+        done = set(completed)
+        lines = []
+        for path in completed:
+            syms = by_file.get(path)
+            if path in done and syms:
+                lines.append(f"{path}: " + ", ".join(sorted(set(syms))[:30]))
+        return "\n".join(lines)
+
     def _generate_file(self, entry: dict, spec: str, conv: str, completed: list[str]) -> str:
         recent = ""
         for path in completed[-4:]:
             f = self.workspace / path
             if f.exists():
                 recent += f"\n=== {path} ===\n" + f.read_text(encoding="utf-8", errors="replace")[:800]
+        surface = self._api_surface(completed)
         system = (
             (conv + "\n\n" if conv else "")
             + "You generate ONE file at a time for a production codebase, following the design "
@@ -188,13 +213,15 @@ class Builder:
             f"Project: {self.session.state.get('idea', '')}\n"
             f"Generate this file: {entry['path']}\nPurpose: {entry['purpose']}\n\n"
             f"Design spec (relevant parts):\n{spec[:14000]}\n\n"
-            f"Recently generated files (match their imports/style):\n{recent}\n\n"
+            + (f"Symbols already defined elsewhere in the project — import these by their real "
+               f"names; do NOT redefine them:\n{surface}\n\n" if surface else "")
+            + f"Recently generated files (match their imports/style):\n{recent}\n\n"
             f"Output the complete content of {entry['path']} now."
         )
         out = _stream([SystemMessage(content=system), HumanMessage(content=prompt)], precise=True)
         out = self._strip_fences(out)
         from core.config import get_config
-        if out and get_config().get("devmode", "build_review", default=True):
+        if out and get_config().devmode_lever("build_review"):
             out = self._review_file(entry, out, system, prompt)
         return out
 
@@ -295,6 +322,11 @@ class Builder:
                     label, code, output = tr
                     if code == 0:
                         console.print(f"[bold green]✔ {label} passed.[/bold green]")
+                        return
+                    # pytest exit code 5 = "no tests collected" — not a failure to
+                    # fix; the project just has no tests yet. Don't burn fix rounds.
+                    if label == "pytest" and code == 5:
+                        console.print("[dim]No tests collected yet — nothing to verify.[/dim]")
                         return
                     problem = f"`{label}` failed (exit {code}):\n{output[-3000:]}"
             except Exception as e:  # noqa: BLE001

@@ -1,6 +1,56 @@
 # Changelog
 
 ## Unreleased
+- **Developer Mode eval harness + evidence-based lever defaults.** Added
+  [`evals/`](evals/): a lever-ablation harness that runs one design phase under
+  different quality-lever configs, grades each decision with a judge model
+  against the phase's `must_cover` checklist, and tabulates the score delta vs.
+  wall-clock. The first ablation (security phase) found **`reflect` carries
+  essentially all of the quality gain** while **`best_of` only pays with a
+  stronger judge**. Acting on that:
+  - Quality levers are now bundled into a single **`devmode.profile`** dial —
+    `fast` (reflect only), **`balanced`** (new default: reflect + consistency +
+    build-review), or `thorough` (everything). Individual levers can still be
+    overridden in config.
+  - **`best_of` is gated on `judge_model`** — best-of-N only fires when a
+    stronger critic model is configured to rank the candidates; otherwise it is
+    skipped (with a note) in favour of a single reflected pass. This drops a
+    default that cost 3× generation latency for no measured quality gain.
+  - Docs/code drift fixed: the default embedding model name and the
+    context-length fallback now match across README and config, and the
+    end-of-design panel points to `dev build` / `dev resolve` (the build
+    hand-off shipped).
+- **Review fixes (correctness, safety, context)** — a pass of fixes from a
+  codebase review:
+  - **Planner no longer marks unfinished tasks done.** `AgentSession.send` now
+    records whether the turn reached a genuine answer (`last_turn_complete`); the
+    planner leaves a task **pending** when the step cap was hit instead of
+    silently marking it complete.
+  - **Developer Mode grounds later phases on digests, not raw artifacts.**
+    Chaining ~14 full artifacts overflowed `num_ctx` and Ollama truncated the
+    *earliest* (most foundational) decisions; phases are now grounded on the
+    compact, already-cached per-phase digests within a bounded budget.
+  - **`dev build` feeds the cross-file symbol index** of already-generated files
+    to each new file, so imports reference real names instead of being guessed
+    (fewer compile/test fix-loop rounds). `pytest` exit code 5 ("no tests
+    collected") is no longer treated as a build failure.
+  - **Safer shell heuristic.** `smart` mode now inspects each segment of a
+    chained command (`&&`/`|`/`;`) and catches more destructive forms
+    (`find -delete`, truncating `>` redirects, `xargs rm`, `git push --force`,
+    …). It is still best-effort, not a security boundary — documented as such.
+  - **Tighter text-tool-call recovery.** A tool call recovered from message text
+    must now *dominate* the message, so a large illustrative JSON example in an
+    explanation can't trigger a real `write_file`/`run_shell`.
+  - **RAG:** default embedding model is the canonical `nomic-embed-text`; a
+    failed semantic search now warns once instead of silently returning nothing.
+  - **`fetch_url`** honours the caller's character budget (the agent tool reads
+    up to 20k instead of being silently clipped to 8k).
+  - **MCP shutdown** drains and joins its background loop so server subprocesses
+    are torn down instead of leaked.
+  - **`--version`** reads the installed package version instead of a hardcoded
+    string. Generated demo output (`output/`, `specs/`) is no longer tracked in
+    git. New tests cover the shell heuristic, planner completion, the recovery
+    gate, the judge parser, and digest grounding.
 - **Developer Mode build loop** — `dev build` now closes the loop: after
   generating files it runs a **compile check → tests → agentic-fix** loop (up to
   3 rounds) so it produces code that actually runs, not just plausible code. It

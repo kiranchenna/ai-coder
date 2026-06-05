@@ -120,7 +120,8 @@ class DevSession:
             else (self.dir / spec.filename)
 
     def _prior_artifacts(self) -> str:
-        """Concatenate completed decision artifacts to ground later phases."""
+        """Concatenate completed decision artifacts in full (used by the reviewer,
+        which wants the actual decisions, not summaries; it caps the length itself)."""
         parts = []
         for p in PHASES:
             if p.target != "doc" or p.kind == "review":
@@ -129,6 +130,37 @@ class DevSession:
             if path.exists():
                 parts.append(path.read_text(encoding="utf-8", errors="replace"))
         return "\n\n---\n\n".join(parts)
+
+    def _prior_grounding(self, budget: int = 8000) -> str:
+        """Compact grounding for the NEXT phase's discussion.
+
+        Earlier phases are summarized to their cached digests (commitments and
+        constraints) rather than concatenated in full. Chaining ~14 raw artifacts
+        would blow past ``num_ctx`` by the later phases, and Ollama truncates from
+        the *front* — silently evicting the earliest, most foundational decisions
+        (requirements, security). Digests keep every prior phase represented within
+        a bounded budget. The digests are already computed (and cached in state) by
+        the per-phase consistency check, so this is usually free.
+        """
+        pairs: list[tuple[str, str]] = []
+        for p in PHASES:
+            if p.target != "doc" or p.kind == "review":
+                continue
+            path = self.dir / p.filename
+            if not path.exists():
+                continue
+            digest = self._phase_digest(p.id)
+            if not digest:  # consistency checks off → fall back to the decision body
+                digest = _decision_section(path.read_text(encoding="utf-8", errors="replace"))
+            if digest.strip():
+                pairs.append((p.title, digest.strip()))
+        if not pairs:
+            return ""
+        # Bound the total: if the digests are large, trim each phase evenly so no
+        # single phase (and never the earliest) is dropped wholesale.
+        per_phase = max(600, budget // len(pairs))
+        parts = [f"## {title}\n{text[:per_phase]}" for title, text in pairs]
+        return "\n\n".join(parts)
 
     def _write_artifact(self, spec: PhaseSpec, decision: str, transcript: str) -> Path:
         path = self._artifact_path(spec)
@@ -287,7 +319,7 @@ class DevSession:
             return ""
 
     def _discuss(self, spec: PhaseSpec) -> tuple[str, list]:
-        context = self._prior_artifacts()
+        context = self._prior_grounding()
         research = self._research(spec) if spec.research else ""
         if spec.research:
             console.print("[dim]🌐 Researching current best practices…[/dim]")
@@ -438,7 +470,7 @@ class DevSession:
         base = list(messages) + [HumanMessage(content=draft_prompt)]
         draft = _stream(base, precise=True).strip()
 
-        if not draft or not get_config().get("devmode", "reflect", default=True):
+        if not draft or not get_config().devmode_lever("reflect"):
             return draft
 
         # Reflection: a small model improves a concrete draft far better than it
@@ -468,7 +500,6 @@ class DevSession:
 
     def _judge_best(self, spec: PhaseSpec, candidates: list[str]) -> str:
         """Pick the strongest of several candidate decisions for a phase."""
-        import re
         listing = "\n\n".join(f"### Candidate {i + 1}\n{c[:3500]}" for i, c in enumerate(candidates))
         must = "".join(f"- {m}\n" for m in spec.must_cover)
         system = (
@@ -480,12 +511,26 @@ class DevSession:
         )
         raw = _critic_stream([SystemMessage(content=system),
                               HumanMessage(content=f"{listing}\n\nBest candidate number:")])
-        m = re.search(r"candidate\s*(\d+)", raw or "", re.IGNORECASE) or re.search(r"(\d+)", raw or "")
-        idx = (int(m.group(1)) - 1) if m else 0
-        if not (0 <= idx < len(candidates)):
-            idx = 0
+        idx = self._parse_choice(raw or "", len(candidates))
         console.print(f"[dim]  ✓ selected candidate {idx + 1} of {len(candidates)}[/dim]")
         return candidates[idx]
+
+    @staticmethod
+    def _parse_choice(raw: str, n: int) -> int:
+        """Parse the judge's chosen 1-based candidate number into a 0-based index.
+
+        Tries explicit forms first ("candidate 2", "#2", "number 2"), then any
+        bare integer — but only accepts a value in [1, n], so a stray digit from
+        the judge's prose (e.g. "covers 5 requirements") can't select a
+        nonexistent candidate. Falls back to 0.
+        """
+        import re
+        for pat in (r"candidate\s*#?\s*(\d+)", r"#\s*(\d+)", r"\bnumber\s*(\d+)", r"\b(\d+)\b"):
+            for m in re.finditer(pat, raw, re.IGNORECASE):
+                v = int(m.group(1))
+                if 1 <= v <= n:
+                    return v - 1
+        return 0
 
     def _summarize(self, spec: PhaseSpec, messages: list) -> str:
         from core.config import get_config
@@ -495,7 +540,11 @@ class DevSession:
             if decomposed:
                 return decomposed   # decomposition is the quality mechanism here
 
-        n = spec.best_of if get_config().get("devmode", "best_of", default=True) else 1
+        cfg = get_config()
+        if spec.best_of > 1 and cfg.devmode_best_of_gated():
+            console.print("[dim]ℹ best-of-N skipped: it needs a stronger devmode.judge_model "
+                          "to pay off (see evals/). Using a single reflected pass.[/dim]")
+        n = spec.best_of if cfg.devmode_lever("best_of") else 1
         if n > 1:
             console.print(f"[dim]🎲 Generating {n} candidate {spec.title} decisions, then "
                           f"judging the best…[/dim]")
@@ -595,7 +644,7 @@ class DevSession:
     def _report_consistency(self, spec: PhaseSpec, decision: str) -> str:
         """Digest a freshly-made decision, check it against earlier phases, surface conflicts."""
         from core.config import get_config
-        if not get_config().get("devmode", "consistency_check", default=True) or not decision.strip():
+        if not get_config().devmode_lever("consistency_check") or not decision.strip():
             return ""
         # Digest this phase and cache it so later phases can compare against it cheaply.
         digest = self._decision_digest(spec.title, decision)
@@ -917,5 +966,6 @@ class DevSession:
         console.print(Panel(
             "🎉 Design phases complete.\n\n"
             "[dim]Artifacts are in docs/dev/ and conventions in AICODER.md — edit them "
-            "anytime. Next: the build hand-off (coming next).[/dim]",
+            "anytime. Next: run [bold]dev build[/bold] to turn the design into code, or "
+            "[bold]dev resolve[/bold] to cross-check the phases first.[/dim]",
             title="[bold green]Developer Mode — design done[/bold green]", border_style="green"))

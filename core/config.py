@@ -80,9 +80,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "knowledge": {
         # Dedicated embedding model for the vector RAG knowledge base.
         # Uses a separate fast model instead of the main chat model.
-        # nomic-embed-text-v2-moe: MoE architecture, multilingual, 523MB, best quality.
+        # `nomic-embed-text` is the canonical Ollama tag (pull it with
+        # `ollama pull nomic-embed-text`): small, fast, and reliably available.
         # Set to "" to use the main chat model (no extra download needed).
-        "embedding_model": "nomic-embed-text-v2-moe",
+        "embedding_model": "nomic-embed-text",
     },
     "mcp": {
         # Optional MCP (Model Context Protocol) servers. Their tools are exposed
@@ -101,26 +102,46 @@ DEFAULT_CONFIG: dict[str, Any] = {
         #   Stop:         [{command: "notify-send done"}]
     },
     "devmode": {
-        # Developer Mode: refine each phase decision with a draft→critique→revise
-        # pass (better depth from a small model, at the cost of an extra call).
-        "reflect": True,
-        # `dev build`: after generating each file, run a self-review pass that
-        # checks it against the spec/conventions and fixes bugs before writing.
-        "build_review": True,
-        # After each phase, check its decision against earlier phases for
-        # contradictions (e.g. a schema that violates the security model) and
-        # surface them immediately instead of waiting for the final review.
-        "consistency_check": True,
-        # For critical phases, generate several candidate decisions and let a
-        # judge pick the strongest (more calls, better worst-case quality).
-        "best_of": True,
+        # Which quality levers fire, as a single dial. Lever ablation (see
+        # evals/) showed `reflect` carries essentially all of the quality gain
+        # on a 7B, while `best_of` only pays with a stronger judge — so the
+        # default profile keeps reflect and drops best_of.
+        #   fast      — reflect only (fastest usable)
+        #   balanced  — reflect + consistency_check + build_review (default)
+        #   thorough  — everything, including best_of (needs a judge_model)
+        "profile": "balanced",
         # Optional stronger model used ONLY for the infrequent, high-leverage
         # critic steps (best-of judging, consistency, design review) while
         # generation stays on the main local model. "" = use the main model.
         # e.g. "qwen2.5-coder:14b" or a larger model you've pulled.
+        # `best_of` is gated on this: with no judge_model it is skipped, since a
+        # same-strength self-judge added latency without quality in testing.
         "judge_model": "",
+        # To override an individual lever regardless of the profile, add a bool
+        # here, e.g.  best_of: true  /  reflect: false. Omitted = inherit profile.
     },
 }
+
+
+# ─── Developer Mode profiles ──────────────────────────────────────────────────
+# Each profile maps to the set of quality levers it enables. `reflect` is on
+# everywhere (ablation showed it carries the gain at ~20% added time); `best_of`
+# only in `thorough` (and is further gated on a configured judge_model).
+
+DEVMODE_LEVERS = ("reflect", "best_of", "consistency_check", "build_review")
+
+DEVMODE_PROFILES: dict[str, dict[str, bool]] = {
+    "fast": {
+        "reflect": True, "best_of": False, "consistency_check": False, "build_review": False,
+    },
+    "balanced": {
+        "reflect": True, "best_of": False, "consistency_check": True, "build_review": True,
+    },
+    "thorough": {
+        "reflect": True, "best_of": True, "consistency_check": True, "build_review": True,
+    },
+}
+DEFAULT_PROFILE = "balanced"
 
 
 # ─── Config class ─────────────────────────────────────────────────────────────
@@ -151,7 +172,7 @@ class Config:
 
     @property
     def model_context_length(self) -> int:
-        return int(self._data["model"].get("context_length", 8192))
+        return int(self._data["model"].get("context_length", 16384))
 
     # ── Shell settings ────────────────────────────────────────────────────────
 
@@ -235,6 +256,43 @@ class Config:
             self._data.get("knowledge", {}).get("embedding_model", "")
             or self._data["model"]["name"]
         )
+
+    # ── Developer Mode levers ─────────────────────────────────────────────────
+
+    def devmode_profile(self) -> str:
+        """The active Developer Mode profile name (falls back to the default)."""
+        name = str(self.get("devmode", "profile", default=DEFAULT_PROFILE)).lower()
+        return name if name in DEVMODE_PROFILES else DEFAULT_PROFILE
+
+    def devmode_judge_model(self) -> str:
+        """The optional stronger critic model, or "" to use the main model."""
+        return (self.get("devmode", "judge_model", default="") or "").strip()
+
+    def _devmode_lever_intended(self, name: str) -> bool:
+        """The lever's value from explicit config or the profile, BEFORE gating."""
+        explicit = self.get("devmode", name, default=None)
+        if isinstance(explicit, bool):
+            return explicit
+        return DEVMODE_PROFILES[self.devmode_profile()].get(name, False)
+
+    def devmode_lever(self, name: str) -> bool:
+        """Whether a quality lever actually fires.
+
+        An explicit ``devmode.<name>`` boolean in config always wins; otherwise
+        the value comes from the active profile. ``best_of`` is additionally
+        gated on a configured ``judge_model`` — a same-strength self-judge added
+        latency without quality in the lever ablation, so best-of-N only fires
+        when a stronger judge is available to actually rank the candidates.
+        """
+        active = self._devmode_lever_intended(name)
+        if name == "best_of" and active and not self.devmode_judge_model():
+            return False
+        return active
+
+    def devmode_best_of_gated(self) -> bool:
+        """True when best_of was requested (profile/explicit) but suppressed for
+        lack of a judge_model — so the skip can be reported, not silent."""
+        return self._devmode_lever_intended("best_of") and not self.devmode_judge_model()
 
     # ── Raw access ────────────────────────────────────────────────────────────
 
