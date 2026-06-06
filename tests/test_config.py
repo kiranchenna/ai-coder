@@ -115,3 +115,50 @@ def test_deep_merge_nested():
     cfg_mod._deep_merge(base, {"model": {"name": "b"}})
     assert base["model"]["name"] == "b"
     assert base["model"]["temp"] == 0.3  # preserved
+
+
+# ─── Developer Mode profiles & lever resolution ───────────────────────────────
+
+def test_default_profile_is_balanced(tmp_path):
+    cfg = _make_config(tmp_path)
+    assert cfg.devmode_profile() == "balanced"
+
+
+def test_balanced_profile_enables_reflect_not_best_of(tmp_path):
+    # The eval's key finding, encoded as the default: reflect on, best_of off.
+    cfg = _make_config(tmp_path)
+    assert cfg.devmode_lever("reflect") is True
+    assert cfg.devmode_lever("consistency_check") is True
+    assert cfg.devmode_lever("best_of") is False
+
+
+def test_fast_profile_is_reflect_only(tmp_path):
+    cfg = _make_config(tmp_path, {"devmode": {"profile": "fast"}})
+    assert cfg.devmode_lever("reflect") is True
+    assert cfg.devmode_lever("consistency_check") is False
+    assert cfg.devmode_lever("build_review") is False
+
+
+def test_unknown_profile_falls_back_to_balanced(tmp_path):
+    cfg = _make_config(tmp_path, {"devmode": {"profile": "turbo"}})
+    assert cfg.devmode_profile() == "balanced"
+
+
+def test_explicit_lever_overrides_profile(tmp_path):
+    # An explicit bool wins over the profile in either direction.
+    cfg = _make_config(tmp_path, {"devmode": {"profile": "fast", "consistency_check": True}})
+    assert cfg.devmode_lever("consistency_check") is True
+
+
+def test_best_of_gated_off_without_judge_model(tmp_path):
+    # thorough wants best_of, but with no judge_model it must not fire.
+    cfg = _make_config(tmp_path, {"devmode": {"profile": "thorough"}})
+    assert cfg._devmode_lever_intended("best_of") is True
+    assert cfg.devmode_lever("best_of") is False
+    assert cfg.devmode_best_of_gated() is True
+
+
+def test_best_of_fires_with_judge_model(tmp_path):
+    cfg = _make_config(tmp_path, {"devmode": {"profile": "thorough", "judge_model": "big:14b"}})
+    assert cfg.devmode_lever("best_of") is True
+    assert cfg.devmode_best_of_gated() is False

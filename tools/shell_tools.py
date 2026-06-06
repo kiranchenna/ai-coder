@@ -1,14 +1,18 @@
 """
 tools/shell_tools.py — Shell command execution with configurable confirmation
 =============================================================================
-Three confirmation modes (user-toggleable at runtime via /shell-mode):
-  always  — always prompt [y/N] before running
+Three confirmation modes (set in ~/.aicoder/config.yaml under shell.confirmation):
+  always  — always prompt [y/N] before running (the safe default)
   never   — auto-run without asking
-  smart   — auto-approve safe commands, ask for destructive ones
+  smart   — auto-approve safe-looking commands, ask for destructive ones
+
+NOTE: "smart" mode uses the best-effort heuristic below. It is a convenience,
+NOT a security boundary — a determined or unlucky command can slip past pattern
+matching. Use "always" if you need a hard gate before anything runs.
 """
 
+import re
 import subprocess
-import sys
 import threading
 from pathlib import Path
 
@@ -19,31 +23,62 @@ from rich.prompt import Confirm
 console = Console()
 
 # ─── Patterns for "smart" mode ────────────────────────────────────────────────
+# These match a *segment* of the command (split on shell operators), so a
+# dangerous call hidden behind `&&`, `|`, `;` is still caught.
 
 _DESTRUCTIVE_STARTS = (
     "rm ", "rm\t", "del ", "del\t",
     "rmdir", "rd ", "rd\t",
-    "format", "mkfs", "fdisk",
+    "format", "mkfs", "fdisk", "dd ",
     "drop ", "drop\t",
     "truncate",
-    "shutdown", "reboot",
+    "shutdown", "reboot", "halt", "poweroff",
     "git clean",
     "git reset --hard",
+    "git push", "git checkout --", "git restore",
+    "chmod ", "chown ",
+    "kill ", "killall", "pkill",
+    "sudo ",
 )
 
+# Substrings that signal danger anywhere in a command segment.
 _DESTRUCTIVE_CONTAINS = (
-    " -rf ", " -fr ", "--force", " /f", " /q /f",
-    "> /dev/", "| rm", "| del",
+    " -rf", " -fr", "-rf ", "-fr ",     # recursive-force in any spacing
+    "--force", "--hard", "--no-preserve-root",
+    " /f", " /q /f",
+    "> /dev/", "xargs rm", "xargs -0 rm",
+    "rm -r", "shutil.rmtree", "os.remove", "os.unlink",
+    "mkfs", "find . -delete", "-delete",
 )
+
+# Shell operators that chain or redirect commands — we inspect each segment.
+_SEGMENT_SPLIT = re.compile(r"&&|\|\||[;|]")
+
+
+def _segment_is_destructive(segment: str) -> bool:
+    seg = segment.strip().lower()
+    if not seg:
+        return False
+    if any(seg.startswith(p) for p in _DESTRUCTIVE_STARTS):
+        return True
+    if any(p in seg for p in _DESTRUCTIVE_CONTAINS):
+        return True
+    # Output redirection that truncates a file: `> file` (but not `>>` append
+    # nor fd-dup like `2>&1`).
+    if re.search(r"(?<!>)>(?![>&])\s*[^\s&]", seg):
+        return True
+    return False
 
 
 def _is_destructive(command: str) -> bool:
-    """Heuristic check: does this command look dangerous?"""
-    cmd_lower = command.lower().strip()
-    if any(cmd_lower.startswith(p) for p in _DESTRUCTIVE_STARTS):
-        return True
-    if any(p in cmd_lower for p in _DESTRUCTIVE_CONTAINS):
-        return True
+    """Best-effort heuristic: does any part of this command look dangerous?
+
+    Splits on shell operators so a destructive call chained behind `&&`/`|`/`;`
+    is still flagged. Not exhaustive — see the module docstring.
+    """
+    for segment in _SEGMENT_SPLIT.split(command):
+        if _segment_is_destructive(segment):
+            return True
     return False
 
 

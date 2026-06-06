@@ -16,6 +16,19 @@ import sys
 from pathlib import Path
 
 
+def _version() -> str:
+    """The installed package version, read from metadata (falls back gracefully).
+
+    Avoids a hardcoded string that silently drifts from pyproject.toml.
+    """
+    try:
+        from importlib.metadata import version
+
+        return version("ai-coder")
+    except Exception:  # PackageNotFoundError, or running from a bare checkout
+        return "0+unknown"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="aicoder",
@@ -61,7 +74,7 @@ Flags:
     parser.add_argument(
         "--version",
         action="version",
-        version="aicoder 3.0.0",
+        version=f"aicoder {_version()}",
     )
     parser.add_argument(
         "--config",
@@ -86,7 +99,7 @@ Flags:
         sys.exit(1)
 
     # ── Load config (and apply overrides) ─────────────────────────────────────
-    from core.config import get_config, save_config
+    from core.config import get_config
 
     cfg = get_config()
 

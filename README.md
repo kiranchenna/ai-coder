@@ -121,8 +121,8 @@ pip install -e ".[dev]"          # dev extras include pytest
 ### Pull the models
 
 ```bash
-ollama pull qwen2.5-coder:7b        # the agent driver
-ollama pull nomic-embed-text-v2-moe # embeddings (web research + documents)
+ollama pull qwen2.5-coder:7b   # the agent driver
+ollama pull nomic-embed-text   # embeddings (web research + documents)
 ```
 
 ### Verify
@@ -145,7 +145,7 @@ The default is **`qwen2.5-coder:7b`** — a good balance of code quality and too
 
 Switch models with `aicoder --model <name>`, the in-session `/model <name>` command, or by editing `~/.aicoder/config.yaml`. Run `aicoder --selftest` after switching to confirm the model supports tool calling.
 
-> **Embeddings** (`nomic-embed-text-v2-moe` by default) are only needed for web research and document ingestion. Alternatives: `bge-m3`, `nomic-embed-text`.
+> **Embeddings** (`nomic-embed-text` by default) are only needed for web research and document ingestion. Alternatives: `bge-m3`, `nomic-embed-text-v2-moe`.
 
 ---
 
@@ -311,7 +311,11 @@ dev resolve           # cross-phase review → fix the design contradictions →
 
 ### How it gets quality from a small model
 
-A local 7B model doesn't know which parts of a domain are hard, and it writes a weak first draft. Developer Mode compensates with **engineering, not a bigger model** — each lever below is independently toggleable in config:
+A local 7B model doesn't know which parts of a domain are hard, and it writes a weak first draft. Developer Mode compensates with **engineering, not a bigger model**. The levers are bundled into a single `devmode.profile` dial — **`fast`** (reflect only), **`balanced`** (the default: reflect + consistency + build-review), or **`thorough`** (everything, including best-of-N). You can still override any individual lever in config.
+
+> **Why these defaults?** A lever ablation (see [`evals/`](evals/)) on the security-design phase found that **`reflect` carries essentially all of the quality gain** (+2.0/10, 70%→100% checklist coverage, for ~20% added time), while **`best_of` only pays with a stronger judge** — with a same-strength self-judge it added latency without quality. So `balanced` keeps reflect and drops best-of, and **`best_of` is gated on `judge_model`**: it only fires when you've configured a stronger critic model to rank the candidates. Two more evals back the rest of `balanced`: `consistency_check` measured **100% precision / 60% recall** (caught every *blatant* cross-phase contradiction with zero false alarms, missed the *subtle* ones — so it stays as cheap insurance while subtle conflicts still want a manual `dev revisit`), and `build_review` measured a **100% placeholder-removal rate** with clean drafts left intact. Run them yourself: `python -m evals.run_eval`, `run_consistency_eval`, `run_build_review_eval`.
+
+The levers, each independently toggleable:
 
 - **Must-cover checklists** — each phase carries a senior checklist the model is *forced* to address (e.g. Security must name the actual E2E protocol and per-device keys; Architecture must name the real-time backbone), so it can't skip the defining decisions.
 - **Reflection** (`reflect`) — every decision is drafted, then critiqued and revised in a second pass; a small model improves a concrete draft far better than it writes a perfect one first try.
@@ -324,7 +328,7 @@ A local 7B model doesn't know which parts of a domain are hard, and it writes a 
 - **`dev resolve`** — turns those contradictions into fixes: it rewrites the offending phase and auto-resyncs the code.
 - **Hybrid judging** (`judge_model`, opt-in) — point the *critic* steps (best-of judging, consistency, review) at a stronger model while generation stays local — the cheapest way to push past what a 7B can reason through.
 
-> Reality check: these levers measurably lift output (on a WhatsApp-clone design test the score rose from ~5.9 to ~8.2 / 10), but a local 7B is still a strong *assistant*, not an autonomous senior engineer — review the generated code, lean on the verify step, and use `dev resolve` / `dev revisit` to correct decisions. Subtle contradictions a 7B can't reason through may still slip past. The design/decision artifacts are valuable on their own, regardless of model strength.
+> Reality check: these levers measurably lift output — the `evals/` harness shows `reflect` taking a security-design phase from 7.5 to 9.5/10, `consistency_check` catching every blatant cross-phase contradiction (100% precision / 60% recall), and `build_review` removing 100% of planted placeholders. But a local 7B is still a strong *assistant*, not an autonomous senior engineer — review the generated code, lean on the verify step, and use `dev resolve` / `dev revisit` to correct decisions. Subtle contradictions a 7B can't reason through may still slip past. The design/decision artifacts are valuable on their own, regardless of model strength.
 
 ---
 
@@ -519,7 +523,7 @@ search:
   timeout_seconds: 10             # per web request
 
 knowledge:
-  embedding_model: "nomic-embed-text-v2-moe"   # "" = use the chat model
+  embedding_model: "nomic-embed-text"   # "" = use the chat model
 
 mcp:
   servers: {}                     # see "MCP servers"
@@ -527,11 +531,11 @@ mcp:
 hooks: {}                         # see "Hooks"
 
 devmode:                          # Developer Mode quality levers (see "How it gets quality")
-  reflect: true                   # draft → critique → revise each decision
-  best_of: true                   # generate N candidates for critical phases, judge the best
-  consistency_check: true         # flag cross-phase contradictions as each phase lands
-  build_review: true              # self-review each generated file before writing it
+  profile: balanced               # fast | balanced | thorough — one dial for the levers below
   judge_model: ""                 # optional stronger model for critic steps only ("" = main model)
+  # Override an individual lever regardless of profile, e.g.:
+  #   best_of: true               # (only fires when judge_model is set — see below)
+  #   consistency_check: false
 ```
 
 - A `.aicoderignore` file (gitignore syntax) in your workspace further excludes files from scanning.
@@ -609,10 +613,11 @@ ai-coder/
 │   ├── file_tools.py       # file read/write/diff/backup/grep, path safety
 │   ├── shell_tools.py      # shell execution with confirmation modes
 │   └── web_tools.py        # DuckDuckGo search + URL fetch + HTML parsing
+├── evals/                  # Developer Mode quality-lever measurement harness
 └── tests/                  # unit + agent-loop integration tests
 ```
 
-See [`docs/architecture.md`](docs/architecture.md) and [`docs/features.md`](docs/features.md) for deeper detail.
+See [`docs/features.md`](docs/features.md) (how it works), [`docs/architecture.md`](docs/architecture.md) (how it's built), [`docs/support.md`](docs/support.md) (FAQ & troubleshooting), and [`evals/README.md`](evals/README.md) (the quality-lever measurements) for deeper detail.
 
 ---
 
@@ -641,7 +646,7 @@ Being honest about the tradeoffs:
 
 - **"Cannot reach Ollama" / model warnings** — make sure Ollama is running (`ollama serve`) and the model is pulled (`ollama pull qwen2.5-coder:7b`).
 - **`--selftest` says the model can't call tools** — switch to a stronger model (`aicoder --model qwen2.5-coder:7b`).
-- **Web research / `read_document` says it couldn't ingest** — pull an embedding model (`ollama pull nomic-embed-text-v2-moe`).
+- **Web research / `read_document` says it couldn't ingest** — pull an embedding model (`ollama pull nomic-embed-text`).
 - **MCP servers don't load** — install the extra (`pip install "ai-coder[mcp]"`) and check the server `command`/`args` in your config.
 - **Edits get declined / the agent loops** — small models sometimes struggle; rephrase, or switch to a larger model.
 - **See your settings** — `aicoder --config`.

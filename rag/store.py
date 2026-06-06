@@ -27,6 +27,26 @@ CHUNK_SIZE = 1200
 CHUNK_OVERLAP = 150
 DEFAULT_TTL_HOURS = 168.0  # 1 week
 
+# Whether we've already warned about a search-time failure, so a broken embedding
+# model surfaces once instead of silently returning no results on every query.
+_warned_search_error = False
+
+
+def _warn_search_error(exc: Exception) -> None:
+    """Print a one-time warning that semantic search failed (best-effort)."""
+    global _warned_search_error
+    if _warned_search_error:
+        return
+    _warned_search_error = True
+    import sys
+
+    print(
+        f"[aicoder] Knowledge-base search failed ({type(exc).__name__}: {exc}). "
+        "RAG results will be empty. Check that the embedding model is pulled "
+        "(`ollama pull nomic-embed-text`) and Ollama is running.",
+        file=sys.stderr,
+    )
+
 
 def chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
     """Split text into overlapping chunks, preferring to break on newlines."""
@@ -164,7 +184,8 @@ class KnowledgeBase:
                 n_results=min(n * 3, count),
                 where=where,
             )
-        except Exception:
+        except Exception as e:
+            _warn_search_error(e)
             return []
 
         docs = results.get("documents", [[]])[0]

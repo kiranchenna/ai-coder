@@ -133,29 +133,48 @@ flags. The same discussion loop runs for every phase except the review-kind one.
   review→fix cross-phase contradictions; both **auto-resync** the code
   (`devmode/resync.py`) via an agentic diff→apply→verify task.
 - **`develop --fast <idea>`** — runs the whole design in one pass; each role
-  makes its own senior decisions with no back-and-forth (still applies all levers).
+  makes its own senior decisions with no back-and-forth (still applies the active
+  profile's levers).
 
 ### Quality levers (driving a small local model)
 
-Each is independently toggleable under the `devmode` config key:
+The toggleable levers are bundled into one **`devmode.profile`** dial —
+`fast` (reflect only), **`balanced`** (default: reflect + consistency_check +
+build_review), or `thorough` (everything). An individual lever can still be
+overridden in config (`Config.devmode_lever()` resolves profile + override).
 
-| Lever | Where | Config |
-|---|---|---|
-| Must-cover checklists | `phases._MUST_COVER` — forces domain-defining decisions | — |
-| Reflection (draft→critique→revise) | `session._one_decision` | `reflect` |
-| Decomposition (list→detail-each→assemble) | `session._summarize_decomposed` (`_DECOMPOSE`) | — |
-| Targeted multi-query research | `session._research_queries` / `_research` | — |
-| Best-of-N + judge | `session._summarize` / `_judge_best` (`_BEST_OF`) | `best_of` |
-| Cross-phase consistency check | `session._report_consistency` (digest-based) | `consistency_check` |
-| Build self-review | `build._review_file` | `build_review` |
-| Build verify→fix loop | `build._verify_and_fix` (compile → tests → agentic fix) | — |
-| Resolve (fix + resync) | `session.resolve` / `_apply_fix` | — |
-| Hybrid judging (stronger critic) | `session._critic_stream` | `judge_model` |
+| Lever | Where | Config | In `balanced`? |
+|---|---|---|---|
+| Must-cover checklists | `phases._MUST_COVER` — forces domain-defining decisions | always on | ✓ |
+| Reflection (draft→critique→revise) | `session._one_decision` | `reflect` | ✓ |
+| Decomposition (list→detail-each→assemble) | `session._summarize_decomposed` (`_DECOMPOSE`) | always on | ✓ |
+| Targeted multi-query research | `session._research_queries` / `_research` | always on | ✓ |
+| Best-of-N + judge | `session._summarize` / `_judge_best` (`_BEST_OF`) | `best_of` | — (needs `judge_model`) |
+| Cross-phase consistency check | `session._report_consistency` (digest-based) | `consistency_check` | ✓ |
+| Build self-review | `build._review_file` | `build_review` | ✓ |
+| Build verify→fix loop | `build._verify_and_fix` (compile → tests → agentic fix) | always on | ✓ |
+| Resolve (fix + resync) | `session.resolve` / `_apply_fix` | always on | ✓ |
+| Hybrid judging (stronger critic) | `session._critic_stream` | `judge_model` | opt-in |
 
-Measured effect: on a WhatsApp-clone design test the per-phase score rose from
-~5.9 to ~8.2 / 10. The honest ceiling: subtle semantic contradictions a 7B can't
-reason through (e.g. a private key stored server-side that the artifact
-rationalizes as "encrypted at rest") may still pass — review the output.
+**`best_of` is gated on `judge_model`** — best-of-N only fires when a stronger
+critic is configured to rank candidates; otherwise it's skipped in favour of a
+single reflected pass (a same-strength self-judge added latency without quality).
+
+**Measured effect** (`evals/`, qwen2.5-coder:7b judging itself):
+
+- `reflect` lifts a single security-design phase from **7.5 → 9.5 / 10** (75% →
+  100% checklist coverage) for ~20% more time — it carries essentially all the
+  gain, which is why it's on in every profile.
+- `consistency_check` scores **100% precision / 60% recall** on labeled
+  contradictions: it catches every *blatant* cross-phase conflict with zero
+  false alarms, but misses *subtle* ones.
+- `build_review` removes **100%** of planted placeholders (TODO / stub /
+  `NotImplementedError`) while leaving clean drafts intact.
+
+**The honest ceiling:** subtle semantic contradictions a 7B can't reason through
+(e.g. a private key stored server-side that the artifact rationalizes as
+"encrypted at rest") may still pass — review the output, and use `dev revisit` /
+`dev resolve` for the subtle cases. See [`evals/README.md`](../evals/README.md).
 
 ---
 
@@ -184,7 +203,7 @@ rationalizes as "encrypted at rest") may still pass — review the output.
 
 ### RAG knowledge base (`rag/store.py`, `rag/ingest.py`)
 - **Storage:** ChromaDB at `~/.aicoder/rag/chroma/`.
-- **Embeddings:** Ollama `nomic-embed-text-v2-moe`.
+- **Embeddings:** Ollama `nomic-embed-text` (configurable; `""` = use the chat model).
 - **Chunking:** real overlapping chunks (≈1200 chars, 150 overlap).
 - **Relevance cutoff:** cosine-distance threshold so unrelated queries return
   nothing instead of the nearest irrelevant chunk.

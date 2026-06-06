@@ -211,8 +211,23 @@ class MCPManager:
                 self._loop.call_soon_threadsafe(ev.set)
             except Exception:  # noqa: BLE001
                 pass
+
+        # Let the runner tasks exit their `async with` blocks — which terminates
+        # the spawned server subprocesses — before stopping the loop. Stopping it
+        # immediately can abandon that teardown and leak the subprocesses.
+        async def _drain_then_stop() -> None:
+            await asyncio.sleep(0.3)
+            self._loop.stop()
+
         try:
-            self._loop.call_soon_threadsafe(self._loop.stop)
-        except Exception:  # noqa: BLE001
-            pass
+            self._submit(_drain_then_stop())
+        except Exception:  # noqa: BLE001 — fall back to an immediate stop
+            try:
+                self._loop.call_soon_threadsafe(self._loop.stop)
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Join the background thread so teardown actually completes before we return.
+        if self._thread is not None:
+            self._thread.join(timeout=3)
         self._started = False

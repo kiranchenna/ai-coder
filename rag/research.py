@@ -21,11 +21,15 @@ PAGE_EXCERPT_CHARS = 2500
 MIN_PAGE_CHARS = 200
 
 
-def cache_url(url: str, project: str = "") -> tuple[int, str]:
-    """Fetch a URL and cache it. Returns (chunks_stored, page_text_or_error)."""
+def cache_url(url: str, project: str = "", max_chars: int = 20000) -> tuple[int, str]:
+    """Fetch a URL and cache it. Returns (chunks_stored, page_text_or_error).
+
+    Fetches up to ``max_chars`` so a docs page the agent asked to read isn't
+    silently clipped to the small web-research excerpt size.
+    """
     from rag.store import KnowledgeBase
 
-    page = fetch_url(url)
+    page = fetch_url(url, max_chars=max_chars)
     if is_fetch_error(page):
         return 0, page
     n = KnowledgeBase.get().add(page, source=url, title=url,

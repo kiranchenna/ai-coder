@@ -74,7 +74,7 @@ def is_fetch_error(page: str) -> bool:
     return page.startswith("[Error") or page.startswith("[Non-text")
 
 
-def fetch_url(url: str, timeout: int | None = None) -> str:
+def fetch_url(url: str, timeout: int | None = None, max_chars: int = 8000) -> str:
     """
     Fetch a URL and return its content as clean plain text (markdown-ish).
 
@@ -82,8 +82,10 @@ def fetch_url(url: str, timeout: int | None = None) -> str:
     readable content. Ideal for feeding documentation pages to the AI.
 
     Args:
-        url:     The URL to fetch
-        timeout: Request timeout in seconds (defaults to config value)
+        url:       The URL to fetch
+        timeout:   Request timeout in seconds (defaults to config value)
+        max_chars: Cap on returned characters (the caller decides how much it can
+                   take — the agent tool allows more than web research excerpts).
 
     Returns:
         Cleaned page text (may be truncated for very large pages)
@@ -110,9 +112,9 @@ def fetch_url(url: str, timeout: int | None = None) -> str:
         return f"[Non-text content ({content_type}) at {url} — skipped]"
 
     if "text/plain" in content_type:
-        return resp.text[:8000]
+        return resp.text[:max_chars]
 
-    return _html_to_text(resp.text, max_chars=8000)
+    return _html_to_text(resp.text, max_chars=max_chars)
 
 
 def _html_to_text(html: str, max_chars: int = 8000) -> str:

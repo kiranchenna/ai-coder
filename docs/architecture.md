@@ -50,6 +50,12 @@ ai-coder/
 │   ├── shell_tools.py          # Shell execution with 3 confirmation modes
 │   └── web_tools.py            # DuckDuckGo search + URL fetch + HTML parsing
 │
+├── evals/                      # Developer Mode measurement harness (see evals/README.md)
+│   ├── run_eval.py             # Lever ablation: quality vs latency per phase
+│   ├── run_consistency_eval.py # consistency_check detection precision/recall
+│   ├── run_build_review_eval.py# build_review placeholder-removal rate
+│   └── *_fixtures.py · rubric.py# fixed yardsticks + judge-model scoring
+│
 └── tests/                      # pytest unit tests
     ├── test_agent.py           # Agent logic (parsers, chunking, detection, memory)
     ├── test_devmode.py         # Developer Mode engine, build, resync, resolve, levers
@@ -123,18 +129,29 @@ files:
   backup: true
 
 knowledge:
-  embedding_model: "nomic-embed-text-v2-moe"
+  embedding_model: "nomic-embed-text"
 
-devmode:                       # Developer Mode quality levers
-  reflect: true                # draft → critique → revise each decision
-  best_of: true                # N candidates + judge for critical phases
-  consistency_check: true      # flag cross-phase contradictions
-  build_review: true           # self-review each generated file
+devmode:                       # Developer Mode quality levers (one dial)
+  profile: balanced            # fast | balanced | thorough
   judge_model: ""              # optional stronger model for critic steps ("" = main)
+  # individual levers can be overridden, e.g.  best_of: true  /  reflect: false
 ```
 
-The `devmode` levers trade extra model calls for quality on a small local model;
-see the README's "How it gets quality from a small model" for what each does.
+The `devmode` levers trade extra model calls for quality on a small local model.
+They're bundled into a single **`profile`** dial (`Config.devmode_lever()` in
+`core/config.py` resolves it; an explicit per-lever bool still overrides):
+
+| profile | reflect | consistency_check | build_review | best_of |
+|---|---|---|---|---|
+| `fast` | ✓ | — | — | — |
+| `balanced` (default) | ✓ | ✓ | ✓ | — |
+| `thorough` | ✓ | ✓ | ✓ | ✓ (needs `judge_model`) |
+
+`best_of` is **gated on `judge_model`**: best-of-N only fires when a stronger
+critic model is configured to rank candidates (a same-strength self-judge added
+latency without quality in the ablation — see `evals/`). The defaults are
+evidence-based; see "Measuring quality" below and the README's "How it gets
+quality from a small model".
 
 ---
 
@@ -155,6 +172,32 @@ see the README's "How it gets quality from a small model" for what each does.
 6. **Resumable plans** — `plan <goal>` saves task state after each step so a build
    resumes after a quit.
 7. **Strictly local** — no cloud, no API keys; all data under `~/.aicoder/`.
+8. **Evidence-based quality levers** — the Developer Mode levers are validated by
+   a local eval harness (`evals/`), not assumed. The default `balanced` profile
+   carries only the levers that measurably earned their latency; `best_of` is
+   gated behind a stronger `judge_model` because the ablation showed it doesn't
+   pay with a same-strength self-judge.
+
+---
+
+## Measuring quality (`evals/`)
+
+Developer Mode's value rests on the claim that engineering (reflection,
+decomposition, checklists, review) lifts a small local model's output. That
+claim is **measured**, not asserted, by three reproducible evals that drive the
+live code paths (`python -m evals.<name>`):
+
+| Eval | Lever measured | Method | Result (7B self-judge) |
+|---|---|---|---|
+| `run_eval` | `reflect`, `best_of` | grade one design phase vs an all-off baseline | reflect +2.0/10 (carries the gain); best_of −0.5 without a stronger judge |
+| `run_consistency_eval` | `consistency_check` | precision/recall on labeled contradiction cases | 100% precision / 60% recall (catches blatant, misses subtle) |
+| `run_build_review_eval` | `build_review` | placeholder-removal on drafts with planted issues | 100% fix rate, 100% preservation |
+
+Scoring logic (`parse_score`, `compute_metrics`, `judge_case`) is pure and
+unit-tested with the model call injectable, so the suite runs without Ollama.
+See [`evals/README.md`](../evals/README.md). Caveat: numbers are small-n with a
+same-model judge — deltas are decisive, absolute figures want a stronger
+`--judge-model` and higher `--repeat`.
 
 ---
 
@@ -218,6 +261,6 @@ aicoder --selftest            # check tool calling
 aicoder                       # start the agent
 
 # models
-ollama pull qwen2.5-coder:7b
-ollama pull nomic-embed-text-v2-moe
+ollama pull qwen2.5-coder:7b   # the agent driver
+ollama pull nomic-embed-text   # embeddings (web research + documents)
 ```
