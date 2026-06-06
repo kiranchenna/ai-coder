@@ -328,7 +328,7 @@ The levers, each independently toggleable:
 - **`dev resolve`** — turns those contradictions into fixes: it rewrites the offending phase and auto-resyncs the code.
 - **Hybrid judging** (`judge_model`, opt-in) — point the *critic* steps (best-of judging, consistency, review) at a stronger model while generation stays local — the cheapest way to push past what a 7B can reason through.
 
-> Reality check: these levers measurably lift output (on a WhatsApp-clone design test the score rose from ~5.9 to ~8.2 / 10), but a local 7B is still a strong *assistant*, not an autonomous senior engineer — review the generated code, lean on the verify step, and use `dev resolve` / `dev revisit` to correct decisions. Subtle contradictions a 7B can't reason through may still slip past. The design/decision artifacts are valuable on their own, regardless of model strength.
+> Reality check: these levers measurably lift output — the `evals/` harness shows `reflect` taking a security-design phase from 7.5 to 9.5/10, `consistency_check` catching every blatant cross-phase contradiction (100% precision / 60% recall), and `build_review` removing 100% of planted placeholders. But a local 7B is still a strong *assistant*, not an autonomous senior engineer — review the generated code, lean on the verify step, and use `dev resolve` / `dev revisit` to correct decisions. Subtle contradictions a 7B can't reason through may still slip past. The design/decision artifacts are valuable on their own, regardless of model strength.
 
 ---
 
@@ -613,10 +613,11 @@ ai-coder/
 │   ├── file_tools.py       # file read/write/diff/backup/grep, path safety
 │   ├── shell_tools.py      # shell execution with confirmation modes
 │   └── web_tools.py        # DuckDuckGo search + URL fetch + HTML parsing
+├── evals/                  # Developer Mode quality-lever measurement harness
 └── tests/                  # unit + agent-loop integration tests
 ```
 
-See [`docs/architecture.md`](docs/architecture.md) and [`docs/features.md`](docs/features.md) for deeper detail.
+See [`docs/features.md`](docs/features.md) (how it works), [`docs/architecture.md`](docs/architecture.md) (how it's built), [`docs/support.md`](docs/support.md) (FAQ & troubleshooting), and [`evals/README.md`](evals/README.md) (the quality-lever measurements) for deeper detail.
 
 ---
 
