@@ -13,7 +13,6 @@ matching. Use "always" if you need a hard gate before anything runs.
 
 import re
 import subprocess
-import sys
 import threading
 from pathlib import Path
 

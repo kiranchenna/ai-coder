@@ -22,7 +22,7 @@ def _version() -> str:
     Avoids a hardcoded string that silently drifts from pyproject.toml.
     """
     try:
-        from importlib.metadata import PackageNotFoundError, version
+        from importlib.metadata import version
 
         return version("ai-coder")
     except Exception:  # PackageNotFoundError, or running from a bare checkout
@@ -99,7 +99,7 @@ Flags:
         sys.exit(1)
 
     # ── Load config (and apply overrides) ─────────────────────────────────────
-    from core.config import get_config, save_config
+    from core.config import get_config
 
     cfg = get_config()
 
