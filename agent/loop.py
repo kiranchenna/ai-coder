@@ -60,9 +60,15 @@ def _msg_chars(m) -> int:
 
 def _is_actionable_tool_message(content: str) -> bool:
     """
-    Decide whether text-emitted tool-call JSON is an actual call vs. an
-    illustrative example inside an explanation. Rejects only the clear case of a
-    small example JSON buried in a long prose answer.
+    Decide whether text-emitted tool-call JSON is an actual call the model intends
+    to execute, vs. an illustrative example inside an explanation.
+
+    Heuristic: the JSON must *dominate* the message. If the surrounding prose is
+    both substantial (> 250 chars) and longer than the JSON itself, the message
+    reads as an explanation that happens to contain JSON (e.g. "you could call
+    write_file like {…}") — not an actual call. This guards against executing
+    hallucinated/example write_file/run_shell calls, which is a safety issue, not
+    just a correctness one.
     """
     spans = balanced_json_objects(content)
     if not spans:
@@ -72,7 +78,7 @@ def _is_actionable_tool_message(content: str) -> bool:
         remainder = remainder.replace(span, "", 1)
     remainder = remainder.replace("```json", "").replace("```", "").strip()
     json_len = sum(len(s) for s in spans)
-    if json_len < 200 and len(remainder) > 500:
+    if len(remainder) > 250 and len(remainder) > json_len:
         return False
     return True
 
@@ -155,6 +161,8 @@ class AgentSession:
         from agent.hooks import HookRunner
 
         self.hooks = HookRunner()
+        # Whether the last send() reached a genuine final answer (vs. the step cap).
+        self.last_turn_complete = True
         self.instructions = _load_instructions(workspace)
         self.messages = [
             SystemMessage(
@@ -176,7 +184,14 @@ class AgentSession:
     # ── Public API ────────────────────────────────────────────────────────────
 
     def send(self, user_input: str) -> str:
-        """Process one user message to completion (through any tool calls)."""
+        """Process one user message to completion (through any tool calls).
+
+        Sets ``self.last_turn_complete`` to True only when the model produced a
+        genuine final answer; False if the step cap was hit first. Callers that
+        chain turns (the planner) read this so they don't mark a task "done" when
+        the agent actually ran out of steps mid-task.
+        """
+        self.last_turn_complete = False
         self._compact_history_if_needed()
         self.messages.append(HumanMessage(content=user_input))
 
@@ -225,6 +240,7 @@ class AgentSession:
             console.print()
             console.print(Markdown(text) if text else "[dim](no further response)[/dim]")
             self.hooks.stop(self.workspace)
+            self.last_turn_complete = True
             return text
 
         console.print(
@@ -294,7 +310,11 @@ class AgentSession:
                 if sum(_msg_chars(x) for x in rest[i:]) <= self._history_budget:
                     keep_from = i
                     break
-        if not keep_from:  # None or 0 → nothing safe to drop
+        # keep_from is None (no boundary's tail fits) or a positive index. It can
+        # never be 0: rest[0:] is the whole tail, which we already know exceeds the
+        # budget (guarded above), so i == 0 fails the fit test. Use an explicit
+        # `is None` check rather than a falsy one so the intent is unambiguous.
+        if keep_from is None:
             return
 
         older, recent = rest[:keep_from], rest[keep_from:]

@@ -166,7 +166,8 @@ _MUST_COVER: dict[str, tuple[str, ...]] = {
     "data_model": (
         "an entity/table for EVERY noun in the requirements",
         "if E2E, store ciphertext (never plaintext) and add device/key tables",
-        "membership tables for groups and per-recipient delivery/read state",
+        "if the app has shared/collaborative resources (groups, teams, channels), the "
+        "membership tables and any per-recipient state (delivery/read/permissions)",
         "primary/foreign keys, indexes, and the migration approach",
     ),
     "api": (

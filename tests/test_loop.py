@@ -93,3 +93,41 @@ def test_empty_stream_raises():
     s = _session([[]])  # zero chunks
     with pytest.raises(RuntimeError):
         s.send("hi")
+
+
+# ─── last_turn_complete distinguishes a real answer from step-cap exhaustion ───
+
+def test_last_turn_complete_true_on_final_answer():
+    s = _session([[AIMessageChunk(content="done")]])
+    s.send("hi")
+    assert s.last_turn_complete is True
+
+
+def test_last_turn_complete_false_when_step_cap_hit():
+    # never stops calling a tool → exhausts the step cap without a final answer
+    s = _session([[_native_tool_call("list_files", {"path": "."})]])
+    s.send("loop forever")
+    assert s.last_turn_complete is False
+
+
+# ─── The text-recovery gate rejects illustrative JSON, accepts real calls ──────
+
+def test_actionable_gate_rejects_large_example_in_prose():
+    from agent.loop import _is_actionable_tool_message
+
+    # A big JSON *example* embedded in a longer explanation must NOT be executed.
+    explanation = (
+        "To write a file you would call the write_file tool. For example, you could "
+        "pass a structure like the following to create a config file, but only do this "
+        "when the user actually asks you to — here is roughly what that call looks like "
+        "in practice when you decide to use it during a real task:"
+    )
+    example = '{"name": "write_file", "arguments": {"path": "x.py", "content": "print(1)"}}'
+    assert _is_actionable_tool_message(explanation + " " + example) is False
+
+
+def test_actionable_gate_accepts_real_call_with_short_leadin():
+    from agent.loop import _is_actionable_tool_message
+
+    msg = 'Reading the file now: {"name": "read_file", "arguments": {"path": "x.py"}}'
+    assert _is_actionable_tool_message(msg) is True

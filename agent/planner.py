@@ -194,6 +194,18 @@ class Planner:
                 console.print("\n[yellow]Paused. Type 'resume' to continue later.[/yellow]")
                 return
 
+            # The agent hit the step cap before finishing — don't mark the task done
+            # (that would silently skip unfinished work). Leave it pending to resume.
+            if not getattr(self.session, "last_turn_complete", True):
+                task["status"] = "pending"
+                self.save(plan)
+                console.print(
+                    f"[yellow]⚠ Task {task['id']} hit the step limit before completing — "
+                    "left as pending.[/yellow]"
+                )
+                console.print("[dim]Type 'resume' to give it more steps, or refine the task.[/dim]")
+                return
+
             task["status"] = "done"
             self.save(plan)
 
