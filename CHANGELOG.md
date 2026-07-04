@@ -1,6 +1,46 @@
 # Changelog
 
 ## Unreleased
+- **`/model` is now an interactive picker, like Claude Code's.** Typed alone,
+  it lists every model you've pulled (via Ollama's `/api/tags`), marks the
+  active one, and lets you pick by number; `/model <name>` still switches
+  directly. Either way the choice is **persisted to `config.yaml` as your new
+  default** (previously `/model <name>` only changed it for that session).
+  Warns if the chosen model isn't actually pulled yet, and falls back
+  gracefully with a same-turn `/model <name>` suggestion if Ollama can't be
+  reached to list models. Added `core.model.list_ollama_models` /
+  `is_model_pulled`, which `cli.py`'s startup pulled-model check now reuses
+  too (one code path instead of two).
+- **`/model` now recommends models you haven't pulled yet, by preference.**
+  Added `core/model_catalog.py`: ~11 hand-verified Ollama tags (confirmed
+  against ollama.com/library, not guessed) grouped into **fast & light
+  (~8GB)**, **balanced (~16GB)**, and **powerful (24GB+)** tiers, each with a
+  one-line reason. The `/model` picker now shows these alongside your
+  installed models (deduped — an already-pulled catalog entry isn't listed
+  twice); picking a not-yet-installed one prompts to confirm the download
+  size, runs `ollama pull`, then switches and persists as the new default on
+  success. A brand-new user with zero models pulled now sees the full
+  curated list instead of a dead end. README's "Choosing a model" table and
+  `config.py`'s model-name comment (which cited an unverified
+  `qwen2.5-coder:4b` and the superseded `deepseek-coder:6.7b`) now point at
+  the same verified catalog.
+- **Tooling/hygiene pass** (from a full-codebase audit — feature completeness,
+  dependency currency, and best-practices review):
+  - **`devmode.profile` is now visible in-session** — the active profile shows
+    in the startup banner, `/help`, and `dev status`, so a user editing
+    `config.yaml` can confirm which levers are actually active.
+  - **Python floor raised to 3.11** (`requires-python`, classifiers, README,
+    docs). 3.10 enters its final security-only phase in Oct 2026; nothing in
+    the codebase used 3.10-only syntax, so this is a clean bump.
+  - **Ruff is now explicitly configured** (`[tool.ruff]` in `pyproject.toml`) —
+    the rule set it was already running (Pyflakes + a pycodestyle subset) is
+    declared rather than implicit, with a documented per-file exemption for the
+    tests' deliberate point-of-use import style. `ruff` is now a declared `dev`
+    extra instead of an ad hoc local install.
+  - **Full-tree lint cleanup**: fixed a genuinely misplaced import block in
+    `agent/tools.py`, renamed 6 ambiguous `l` variables to `line`/`lang`, and
+    removed 3 dead `tempfile` imports in tests. `ruff check .` is clean across
+    the whole repository, not just recently-touched files.
 - **Developer Mode eval harness + evidence-based lever defaults.** Added
   [`evals/`](evals/): a lever-ablation harness that runs one design phase under
   different quality-lever configs, grades each decision with a judge model

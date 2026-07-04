@@ -63,7 +63,7 @@ commands are handled by the REPL (`agent/loop.py`):
 | `dev …` | `dev` (resume) · `dev status` · `dev build` · `dev revisit <phase>` · `dev resolve` |
 | `plan <goal>` | Decompose a goal into an ordered, resumable task list and build it |
 | `resume` | Continue an in-progress plan |
-| `/model [name]` | Show or switch the model for this session |
+| `/model [name]` | `/model` alone opens an interactive picker: your pulled models (current marked) plus curated, not-yet-pulled recommendations grouped by fast/balanced/powerful tier — pick one to pull (with confirmation) and switch. `/model <name>` switches straight to a name you know. Either way the choice is persisted to `config.yaml` as the new default (mirrors Claude Code's `/model`) |
 | `/tools` | List the agent's tools |
 | `/diff` | Show the git diff of changes so far |
 | `/memory` | Show what's remembered about this project |

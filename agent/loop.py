@@ -414,6 +414,147 @@ def _knowledge_learn(topic: str) -> None:
         console.print(f"  [dim]• {s}[/dim]")
 
 
+def _format_size(num_bytes: int) -> str:
+    """Human-readable size, e.g. ``4.7 GB``."""
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024:
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
+
+
+def _switch_model(name: str, session: "AgentSession") -> None:
+    """Switch the active model, persist it as the new default, and rebind tools."""
+    from core.config import get_config, save_config
+    from core.model import get_chat_model, is_model_pulled
+
+    cfg = get_config()
+    cfg.raw()["model"]["name"] = name
+    save_config(cfg.raw())
+    session.llm = get_chat_model(tools=session.tools)
+    console.print(f"[green]✓ Set model to [bold]{name}[/bold] and saved as your default for "
+                  f"new sessions.[/green]")
+
+    pulled = is_model_pulled(cfg.model_base_url, name)
+    if pulled is False:
+        console.print(f"[yellow]⚠ '{name}' may not be pulled yet.[/yellow] "
+                      f"[dim]Run: ollama pull {name}[/dim]")
+
+
+def _confirm_and_pull(tag: str, size_bytes: int, session: "AgentSession") -> None:
+    """Pull a not-yet-installed catalog model (with confirmation — it's a real
+    download), then switch to it and persist as the new default. `tag` always
+    comes from our own hardcoded RECOMMENDED_MODELS, never raw user input, so
+    it's safe to interpolate into the shell command directly."""
+    from rich.prompt import Confirm
+    from tools.shell_tools import run_command
+
+    if not Confirm.ask(
+        f"Pull [bold]{tag}[/bold] (~{_format_size(size_bytes)})? This can take a while "
+        "depending on your connection.",
+        default=True,
+    ):
+        console.print("[dim]No change made.[/dim]")
+        return
+
+    console.print(f"[dim]⬇ Pulling {tag} — hang tight, this can take a while for larger "
+                  f"models…[/dim]")
+    _out, err, code = run_command(f"ollama pull {tag}", timeout=7200)
+    if code != 0:
+        console.print(f"[red]✗ Failed to pull {tag} (exit {code}).[/red]"
+                      + (f"\n{err.strip()[-500:]}" if err else ""))
+        return
+    console.print(f"[green]✓ Pulled {tag}.[/green]")
+    _switch_model(tag, session)
+
+
+def _model_menu_entries(cfg, installed: list[dict]) -> list[dict]:
+    """Merge installed models with not-yet-installed catalog recommendations
+    into one ordered, section-labeled list for the `/model` picker."""
+    from core.model_catalog import RECOMMENDED_MODELS, TIER_LABELS, TIER_ORDER
+
+    installed_names = {m["name"] for m in installed}
+    entries = [
+        {"tag": m["name"], "size_bytes": m["size"], "installed": True,
+         "current": m["name"] == cfg.model_name, "note": None, "section": "Installed"}
+        for m in installed
+    ]
+    for tier in TIER_ORDER:
+        for spec in RECOMMENDED_MODELS:
+            if spec.tier != tier or spec.tag in installed_names:
+                continue  # already installed — don't recommend it a second time
+            entries.append({
+                "tag": spec.tag, "size_bytes": int(spec.size_gb * 1024 ** 3),
+                "installed": False, "current": False, "note": spec.note,
+                "section": f"Recommended — {TIER_LABELS[tier]}",
+            })
+    return entries
+
+
+def _render_model_menu(entries: list[dict]) -> None:
+    lines: list[str] = []
+    last_section = None
+    for i, e in enumerate(entries, 1):
+        if e["section"] != last_section:
+            if last_section is not None:
+                lines.append("")
+            lines.append(f"[bold]{e['section']}[/bold]")
+            last_section = e["section"]
+        marker = " [dim](current)[/dim]" if e["current"] else ""
+        pulled_tag = "" if e["installed"] else " [dim]· not pulled[/dim]"
+        note = f"  [dim]{e['note']}[/dim]" if e["note"] else ""
+        lines.append(f"  [cyan]{i:>2}[/cyan]  {e['tag']:<24} {_format_size(e['size_bytes']):>8}"
+                     f"{marker}{pulled_tag}{note}")
+    console.print(Panel(
+        "\n".join(lines),
+        title="[cyan]Available models (via Ollama)[/cyan]",
+        border_style="cyan",
+    ))
+
+
+def _handle_model_command(arg: str, session: "AgentSession") -> None:
+    """`/model` — pick a model interactively (installed models plus curated,
+    not-yet-installed recommendations by hardware/preference tier), or switch
+    straight to `/model <name>`. Mirrors the Claude Code `/model` picker: select
+    one and it becomes your default for new sessions, not just this one."""
+    from core.config import get_config
+
+    cfg = get_config()
+    if arg:
+        _switch_model(arg, session)
+        return
+
+    from core.model import list_ollama_models
+
+    try:
+        installed = list_ollama_models(cfg.model_base_url)
+    except Exception:
+        console.print(
+            "[yellow]⚠ Couldn't reach Ollama to list models.[/yellow]\n"
+            f"[dim]Make sure it's running (`ollama serve`), or switch directly: "
+            f"/model <name>. Current: {cfg.model_name}[/dim]"
+        )
+        return
+
+    entries = _model_menu_entries(cfg, installed)
+    _render_model_menu(entries)
+    choice = Prompt.ask(f"Select a model [1-{len(entries)}, Enter to keep current]",
+                        default="").strip()
+    if not choice:
+        console.print(f"[dim]Kept current model: {cfg.model_name}[/dim]")
+        return
+    if not choice.isdigit() or not (1 <= int(choice) <= len(entries)):
+        console.print("[yellow]Invalid selection — no change made.[/yellow]")
+        return
+
+    entry = entries[int(choice) - 1]
+    if entry["installed"]:
+        _switch_model(entry["tag"], session)
+    else:
+        _confirm_and_pull(entry["tag"], entry["size_bytes"], session)
+
+
 def _handle_command(raw: str, session: "AgentSession", workspace: Path) -> None:
     """Handle a /slash command in the agent REPL."""
     from core.config import get_config
@@ -423,13 +564,15 @@ def _handle_command(raw: str, session: "AgentSession", workspace: Path) -> None:
     arg = parts[1].strip() if len(parts) > 1 else ""
 
     if name in ("help", "h", "?"):
+        profile = get_config().devmode_profile()
         console.print(
             Panel(
-                "[bold]develop [--fast] <idea>[/bold] Developer Mode: role-driven SDLC design → build (--fast = no back-and-forth)\n"
-                "[bold]dev[/bold]           resume Developer Mode ('dev status' / 'dev build' / 'dev revisit <phase>' / 'dev resolve')\n"
+                f"[bold]develop [--fast] <idea>[/bold] Developer Mode: role-driven SDLC design → build (--fast = no back-and-forth)\n"
+                f"[bold]dev[/bold]           resume Developer Mode ('dev status' / 'dev build' / 'dev revisit <phase>' / 'dev resolve') "
+                f"[dim]— active profile: {profile}[/dim]\n"
                 "[bold]plan <goal>[/bold]   decompose a goal into tasks and build it\n"
                 "[bold]resume[/bold]        continue an in-progress plan\n"
-                "[bold]/model [name][/bold] show or switch the model for this session\n"
+                "[bold]/model [name][/bold] pick a model interactively, or switch straight to <name>\n"
                 "[bold]/tools[/bold]        list the agent's tools\n"
                 "[bold]/diff[/bold]         show the git diff of changes so far\n"
                 "[bold]/memory[/bold]       show what's remembered about this project\n"
@@ -456,13 +599,7 @@ def _handle_command(raw: str, session: "AgentSession", workspace: Path) -> None:
         else:
             console.print(Syntax(out, "diff", theme="monokai", word_wrap=True))
     elif name == "model":
-        cfg = get_config()
-        if not arg:
-            console.print(f"Current model: [bold]{cfg.model_name}[/bold]")
-        else:
-            cfg.raw()["model"]["name"] = arg
-            session.llm = get_chat_model(tools=session.tools)
-            console.print(f"[green]Switched model to [bold]{arg}[/bold] for this session.[/green]")
+        _handle_model_command(arg, session)
     elif name == "memory":
         from memory.project import ProjectMemory
 
@@ -527,7 +664,8 @@ def run_agent_repl(workspace: Path) -> None:
 
     from agent.planner import Planner
 
-    model_name = get_config().model_name
+    cfg = get_config()
+    model_name = cfg.model_name
     session = AgentSession(workspace)
     planner = Planner(workspace, session)
 
@@ -536,6 +674,7 @@ def run_agent_repl(workspace: Path) -> None:
             f"[bold magenta]AICoder[/bold magenta] [dim]— local agentic coding assistant[/dim]\n"
             f"[dim]Workspace:[/dim] {workspace}\n"
             f"[dim]Model:[/dim]     {model_name}\n"
+            f"[dim]Dev Mode:[/dim]  {cfg.devmode_profile()} profile\n"
             f"[dim]Tools:[/dim]     {', '.join(session.tools_by_name)}\n\n"
             f"[dim]Describe a task in plain English, or 'plan <goal>' for a multi-step build.\n"
             f"'/help' for commands · 'exit' to quit.[/dim]",

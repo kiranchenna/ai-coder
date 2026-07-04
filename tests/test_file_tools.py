@@ -6,7 +6,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
-import tempfile
 from tools.file_tools import (
     resolve, read_file, write_file, backup_file,
     generate_diff, file_tree, search_in_files,

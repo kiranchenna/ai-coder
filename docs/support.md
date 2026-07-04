@@ -53,6 +53,11 @@ fetches the pages you asked for. Nothing else leaves your machine.
 (`qwen2.5-coder:3b`) is faster but weaker at multi-step work; larger
 (`qwen2.5-coder:14b`, `qwen3-coder:30b`) is stronger and needs more memory. The
 model and its context share memory, so a bigger context window costs RAM too.
+Switch anytime with `/model` — type it alone for an interactive picker: your
+pulled models plus curated picks you haven't pulled yet, grouped by tier with a
+one-line reason each. Pick a not-yet-pulled one and it downloads (with
+confirmation) and switches in one step; either way, the choice is saved as your
+default going forward.
 
 **How good is it, really?**
 It's a strong *supervised* assistant, not an autonomous senior engineer. A local

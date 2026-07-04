@@ -735,13 +735,16 @@ class DevSession:
     # ── Public ─────────────────────────────────────────────────────────────────
 
     def show_status(self) -> None:
+        from core.config import get_config
+
         lines = []
         for p in PHASES:
             st = self.state["phases"].get(p.id, {}).get("status", "pending")
             lines.append(f"  {_STATUS_ICON.get(st, '○')}  {p.title}")
         console.print(Panel("\n".join(lines),
                             title=f"[bold magenta]🧭 Developer Mode — {self.state.get('idea','')[:50]}[/bold magenta]",
-                            subtitle="[dim]docs/dev/[/dim]", border_style="magenta"))
+                            subtitle=f"[dim]docs/dev/  ·  profile: {get_config().devmode_profile()}[/dim]",
+                            border_style="magenta"))
 
     def _build_exists(self) -> bool:
         bp = self.dir / "build_plan.json"

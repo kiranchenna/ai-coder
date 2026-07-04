@@ -37,8 +37,8 @@ def _load_aicoderignore(root: Path):
     try:
         import pathspec
         lines = [
-            l.strip() for l in ignore_file.read_text(encoding="utf-8").splitlines()
-            if l.strip() and not l.strip().startswith("#")
+            line.strip() for line in ignore_file.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
         ]
         return pathspec.PathSpec.from_lines("gitwildmatch", lines)
     except Exception:
@@ -91,7 +91,7 @@ class WorkspaceContext:
         if self._languages:
             parts.append(
                 "Languages: "
-                + ", ".join(f"{l} ({n})" for l, n in list(self._languages.items())[:6])
+                + ", ".join(f"{lang} ({n})" for lang, n in list(self._languages.items())[:6])
             )
         tree = file_tree(
             self.root,

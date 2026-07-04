@@ -133,24 +133,21 @@ Flags:
 
 def _check_ollama(base_url: str, model_name: str) -> None:
     """Warn if Ollama doesn't seem to be running or the model isn't pulled."""
-    try:
-        import httpx
-        resp = httpx.get(f"{base_url}/api/tags", timeout=3)
-        if resp.status_code == 200:
-            models = [m["name"] for m in resp.json().get("models", [])]
-            # Check if model (or a close match) is available
-            if not any(model_name.split(":")[0] in m for m in models):
-                from rich.console import Console
-                Console().print(
-                    f"\n[yellow]⚠ Model '[bold]{model_name}[/bold]' may not be pulled yet.[/yellow]\n"
-                    f"[dim]Run: ollama pull {model_name}[/dim]\n"
-                )
-    except Exception:
-        from rich.console import Console
+    from core.model import is_model_pulled
+
+    pulled = is_model_pulled(base_url, model_name)
+    from rich.console import Console
+
+    if pulled is None:
         Console().print(
             "\n[yellow]⚠ Cannot reach Ollama server.[/yellow]\n"
             f"[dim]Make sure Ollama is running: ollama serve[/dim]\n"
             f"[dim]Expected at: {base_url}[/dim]\n"
+        )
+    elif not pulled:
+        Console().print(
+            f"\n[yellow]⚠ Model '[bold]{model_name}[/bold]' may not be pulled yet.[/yellow]\n"
+            f"[dim]Run: ollama pull {model_name}[/dim]\n"
         )
 
 

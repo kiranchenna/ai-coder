@@ -7,7 +7,7 @@ name = "ai-coder"
 version = "3.0.0"
 description = "Local, offline agentic coding assistant — plans, edits, runs, and verifies"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Kiran Chenna" }]
@@ -17,7 +17,6 @@ classifiers = [
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Code Generators",
@@ -60,10 +59,23 @@ include = ["core*", "tools*", "aicoder_cli*", "agent*", "rag*", "memory*", "devm
 "*" = ["*.yaml", "*.md"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "ruff>=0.15"]
 mcp = ["mcp>=1.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+# Explicit declaration of ruff's own default rule set (Pyflakes + a pycodestyle
+# subset) so linting is a deliberate choice, not an implicit default.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests deliberately import at point-of-use to group related tests by section,
+# and bootstrap sys.path before their other imports.
+"tests/*.py" = ["E402"]

@@ -15,14 +15,6 @@ import shlex
 import sys
 from pathlib import Path
 
-
-def _shell_quote(s: str) -> str:
-    """Quote a string for the active platform's shell (subprocess shell=True)."""
-    if sys.platform == "win32":
-        # cmd.exe doesn't treat single quotes as quoting — use double quotes.
-        return '"' + str(s).replace('"', '""') + '"'
-    return shlex.quote(str(s))
-
 from langchain_core.tools import tool
 from rich.console import Console
 from rich.prompt import Confirm
@@ -31,6 +23,14 @@ import tools.file_tools as ft
 from tools.shell_tools import run_with_confirmation
 
 console = Console()
+
+
+def _shell_quote(s: str) -> str:
+    """Quote a string for the active platform's shell (subprocess shell=True)."""
+    if sys.platform == "win32":
+        # cmd.exe doesn't treat single quotes as quoting — use double quotes.
+        return '"' + str(s).replace('"', '""') + '"'
+    return shlex.quote(str(s))
 
 MAX_READ_CHARS = 20_000
 MAX_SHELL_OUTPUT = 6_000
@@ -69,8 +69,8 @@ def locate_edit(content: str, old: str) -> tuple[int, int, str] | tuple[None, st
         for label, norm in (("exact", lambda s: s),
                             ("fuzzy", lambda s: s.rstrip()),
                             ("fuzzy", lambda s: s.strip())):
-            target = [norm(l) for l in old_lines]
-            cnorm = [norm(l) for l in content_lines]
+            target = [norm(line) for line in old_lines]
+            cnorm = [norm(line) for line in content_lines]
             hits = [i for i in range(len(content_lines) - n + 1) if cnorm[i:i + n] == target]
             if len(hits) == 1:
                 start, end = line_span(hits[0])
@@ -101,18 +101,18 @@ def _reindent_to_match(matched: str, new_string: str) -> str:
     """
     file_indent = _leading_ws(matched.split("\n", 1)[0])
     lines = new_string.split("\n")
-    first_nonempty = next((l for l in lines if l.strip()), "")
+    first_nonempty = next((line for line in lines if line.strip()), "")
     new_base = _leading_ws(first_nonempty)
     if new_base == file_indent:
         return new_string
     rebased = []
-    for l in lines:
-        if not l.strip():
+    for line in lines:
+        if not line.strip():
             rebased.append("")
-        elif l.startswith(new_base):
-            rebased.append(file_indent + l[len(new_base):])
+        elif line.startswith(new_base):
+            rebased.append(file_indent + line[len(new_base):])
         else:
-            rebased.append(file_indent + l.lstrip())
+            rebased.append(file_indent + line.lstrip())
     return "\n".join(rebased)
 
 

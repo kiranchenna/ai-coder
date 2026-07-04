@@ -15,6 +15,24 @@ def test_init_all_phases_pending(tmp_path):
     assert all(ds.state["phases"][p.id]["status"] == "pending" for p in PHASES)
 
 
+def test_show_status_includes_active_profile(tmp_path, capsys):
+    # 'dev status' must surface which profile/levers are actually active, so a
+    # user editing config.yaml can confirm it without guessing.
+    from core.config import get_config
+
+    dm = get_config().raw()["devmode"]
+    saved = dm.get("profile")
+    dm["profile"] = "thorough"
+    try:
+        DevSession(tmp_path, "x").show_status()
+        assert "profile: thorough" in capsys.readouterr().out
+    finally:
+        if saved is None:
+            dm.pop("profile", None)
+        else:
+            dm["profile"] = saved
+
+
 def test_write_doc_and_conventions_artifacts(tmp_path):
     ds = DevSession(tmp_path, "x")
     p = ds._write_artifact(PHASES_BY_ID["requirements"], "Decision body", "transcript")

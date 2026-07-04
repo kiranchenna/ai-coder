@@ -29,8 +29,9 @@ def project_id(root: Path) -> str:
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "model": {
-        # NOTE: Change 'name' to any model you have pulled via `ollama pull <model>`.
-        # Good coding models: qwen2.5-coder:4b, qwen2.5-coder:7b, deepseek-coder:6.7b
+        # NOTE: Change 'name' to any model you have pulled via `ollama pull <model>`,
+        # or use the in-session `/model` command for an interactive picker with
+        # curated, verified recommendations by tier (see core/model_catalog.py).
         "provider": "ollama",
         "name": "qwen2.5-coder:7b",
         "base_url": "http://localhost:11434",

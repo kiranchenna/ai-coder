@@ -88,7 +88,7 @@ your message
 
 ## Requirements
 
-- **Python 3.10+**
+- **Python 3.11+**
 - **[Ollama](https://ollama.com/)** installed and running locally
 - A pulled chat model (and, for web/document RAG, an embedding model)
 
@@ -137,13 +137,13 @@ aicoder --selftest    # confirms the configured model can call tools
 
 The default is **`qwen2.5-coder:7b`** — a good balance of code quality and tool-calling reliability. Pick based on your hardware (the model and its context share memory):
 
-| RAM / VRAM | Suggested model | Notes |
+| RAM / VRAM | Suggested models | Notes |
 |---|---|---|
-| 8 GB | `qwen2.5-coder:3b` / `qwen3:4b` | fast, weaker at multi-step work |
-| 16 GB | **`qwen2.5-coder:7b`** / `qwen3:8b` | the sweet spot |
-| 24 GB+ | `qwen2.5-coder:14b`, `qwen3-coder:30b` | strongest, needs more memory |
+| 8 GB | `qwen2.5-coder:3b`, `qwen3:4b`, `granite4:micro` | fast, weaker at multi-step work |
+| 16 GB | **`qwen2.5-coder:7b`** (default), `qwen2.5-coder:14b`, `deepseek-coder-v2:16b`, `gpt-oss:20b` | the sweet spot |
+| 24 GB+ | `qwen3-coder:30b`, `devstral:24b`, `codestral:latest`, `qwen2.5-coder:32b` | strongest, needs more memory |
 
-Switch models with `aicoder --model <name>`, the in-session `/model <name>` command, or by editing `~/.aicoder/config.yaml`. Run `aicoder --selftest` after switching to confirm the model supports tool calling.
+Switch models with the in-session `/model` command — type `/model` alone for an interactive picker. It lists every model you've pulled (current one marked) **plus curated recommendations you haven't pulled yet**, grouped into the same three tiers above with a one-line reason for each; pick one and it pulls (with confirmation) and switches in one step. Or `/model <name>` to switch straight to a name you already know. Either way it's **saved as your default for new sessions**, not just this one. `aicoder --model <name>` overrides the model for one run only (without changing the saved default), and you can also edit `~/.aicoder/config.yaml` directly. Run `aicoder --selftest` after switching to confirm the model supports tool calling.
 
 > **Embeddings** (`nomic-embed-text` by default) are only needed for web research and document ingestion. Alternatives: `bge-m3`, `nomic-embed-text-v2-moe`.
 
@@ -217,7 +217,7 @@ A few literal commands are handled by the REPL; everything else is a task for th
 |---|---|
 | `plan <goal>` | Decompose a goal into an ordered, resumable task list and build it |
 | `resume` | Continue an in-progress plan |
-| `/model [name]` | Show or switch the model for this session |
+| `/model [name]` | Pick a model interactively (lists pulled models, current marked), or switch straight to `<name>` — either way, saved as your default |
 | `/tools` | List all available tools (built-in + MCP) |
 | `/diff` | Show the git diff of changes so far |
 | `/memory` | Show what's remembered about this project |

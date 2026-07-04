@@ -1,6 +1,6 @@
 # AICoder — Architecture
 
-**Version:** 3.0.0 | **Language:** Python 3.10+ | **Entry point:** `cli.py` → `aicoder` CLI command
+**Version:** 3.0.0 | **Language:** Python 3.11+ | **Entry point:** `cli.py` → `aicoder` CLI command
 
 AICoder v3 is a local, offline **agentic** coding assistant. It uses Ollama
 (local LLM, no cloud, no API keys) to drive a single tool-calling loop that
@@ -21,6 +21,7 @@ ai-coder/
 │   ├── context.py              # Workspace scanner / repo overview
 │   ├── code_index.py           # ctags-style symbol index (find_symbol)
 │   ├── model.py                # ChatOllama factory + tool-call recovery + selftest
+│   ├── model_catalog.py        # Curated /model recommendations by tier (fast/balanced/powerful)
 │   └── project.py              # Test- & lint-command detection
 │
 ├── agent/                      # The agentic core

@@ -112,6 +112,43 @@ def get_chat_model(precise: bool = False, tools: Sequence | None = None, model: 
     return llm
 
 
+# ── Model discovery (for `/model` and the startup pull-check) ──────────────────
+
+def list_ollama_models(base_url: str) -> list[dict]:
+    """
+    Query Ollama for the models pulled locally. Returns a list of
+    ``{"name": str, "size": int (bytes)}`` sorted by name. Raises (network
+    error, bad status) so callers can distinguish "no models" from
+    "couldn't reach Ollama" instead of getting an empty list either way.
+    """
+    import httpx
+
+    resp = httpx.get(f"{base_url.rstrip('/')}/api/tags", timeout=5)
+    resp.raise_for_status()
+    models = resp.json().get("models", [])
+    return sorted(
+        (
+            {"name": m.get("name") or m.get("model", ""), "size": int(m.get("size", 0))}
+            for m in models
+        ),
+        key=lambda m: m["name"],
+    )
+
+
+def is_model_pulled(base_url: str, model_name: str) -> bool | None:
+    """
+    Whether ``model_name`` (or a close match, ignoring the ``:tag`` suffix) is
+    among Ollama's locally pulled models. Returns None if Ollama can't be
+    reached — callers should treat that as "unknown", not "not pulled".
+    """
+    try:
+        models = list_ollama_models(base_url)
+    except Exception:
+        return None
+    base = model_name.split(":")[0]
+    return any(base in m["name"] for m in models)
+
+
 def selftest() -> bool:
     """
     Phase 0 smoke test: verify the configured model can do native tool calling.
