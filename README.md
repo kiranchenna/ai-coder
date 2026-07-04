@@ -668,4 +668,4 @@ python -m build           # build sdist + wheel (needs `build`)
 
 MIT — see [LICENSE](LICENSE). Changelog: [CHANGELOG.md](CHANGELOG.md).
 
-Contributions welcome — please open an issue first for significant changes.
+Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md); please open an issue first for significant changes.

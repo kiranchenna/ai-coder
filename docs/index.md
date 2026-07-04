@@ -13,6 +13,7 @@ researches the web, and remembers your project — all on your machine.
 | [architecture.md](architecture.md) | contributors | How it's built — directory structure, tech stack, data flow, config resolution, **the eval harness**, data formats |
 | [support.md](support.md) | users | Support & FAQ — troubleshooting, common questions, the safety model, known limitations, reporting issues |
 | [../evals/README.md](../evals/README.md) | contributors | The Developer Mode measurement harness — what each eval proves and how to run it |
+| [../CONTRIBUTING.md](../CONTRIBUTING.md) | contributors | Dev setup, the test/lint bar for PRs, code style, and how to back devmode lever changes with evals |
 | [../CHANGELOG.md](../CHANGELOG.md) | everyone | Release notes |
 
 ## Start here
@@ -20,5 +21,5 @@ researches the web, and remembers your project — all on your machine.
 - **New user?** [README](../README.md) → quickstart, then [support.md](support.md)
   if anything misbehaves.
 - **Want to understand a feature?** [features.md](features.md).
-- **Contributing or curious how it works?** [architecture.md](architecture.md)
-  and [../evals/README.md](../evals/README.md).
+- **Contributing or curious how it works?** [architecture.md](architecture.md),
+  [../evals/README.md](../evals/README.md), and [../CONTRIBUTING.md](../CONTRIBUTING.md).
