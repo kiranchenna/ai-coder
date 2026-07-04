@@ -1,6 +1,14 @@
 # Changelog
 
 ## Unreleased
+
+## 3.1.0 - 2026-07-04
+- **Repo hygiene ahead of going public.** Added `CONTRIBUTING.md` (dev setup,
+  the pytest/ruff bar for PRs, code style, and a pointer to `evals/` for
+  anyone changing Developer Mode's quality-lever defaults). Removed the
+  tracked `output/task_tracker/` and `specs/task_tracker*` demo artifacts left
+  over from earlier testing (placeholder values only — no real credentials;
+  `output/`/`specs/` are gitignored, so they won't be re-tracked).
 - **`/model` is now an interactive picker, like Claude Code's.** Typed alone,
   it lists every model you've pulled (via Ollama's `/api/tags`), marks the
   active one, and lets you pick by number; `/model <name>` still switches
