@@ -99,3 +99,39 @@ def test_preflight_skipped_for_openai_compatible_provider(monkeypatch):
     _run_ollama_preflight(SimpleNamespace(model_provider="openai_compatible",
                                           model_base_url="http://x", model_name="m"))
     assert calls == []
+
+
+# ── --continue / -c ──────────────────────────────────────────────────────────
+
+def test_continue_flag_is_passed_through_to_run_agent_repl(monkeypatch, tmp_path):
+    import cli
+
+    monkeypatch.setattr(sys, "argv", ["aicoder", "--workspace", str(tmp_path), "--continue"])
+    monkeypatch.setattr(cli, "_run_ollama_preflight", lambda cfg: None)
+    captured = {}
+    monkeypatch.setattr(
+        "agent.loop.run_agent_repl",
+        lambda workspace, continue_session=False: captured.update(
+            workspace=workspace, continue_session=continue_session,
+        ),
+    )
+    # Not a real tty in a test process, so this exercises the plain-REPL path.
+    cli.main()
+    assert captured["continue_session"] is True
+    assert captured["workspace"] == tmp_path.resolve()
+
+
+def test_without_continue_flag_defaults_to_a_fresh_session(monkeypatch, tmp_path):
+    import cli
+
+    monkeypatch.setattr(sys, "argv", ["aicoder", "--workspace", str(tmp_path)])
+    monkeypatch.setattr(cli, "_run_ollama_preflight", lambda cfg: None)
+    captured = {}
+    monkeypatch.setattr(
+        "agent.loop.run_agent_repl",
+        lambda workspace, continue_session=False: captured.update(
+            continue_session=continue_session,
+        ),
+    )
+    cli.main()
+    assert captured["continue_session"] is False

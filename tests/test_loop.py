@@ -1,4 +1,5 @@
 """Integration tests for the agent loop (AgentSession.send) using a scripted LLM."""
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -24,6 +25,16 @@ class ScriptedLLM:
         idx = min(self.calls, len(self.responses) - 1)
         self.calls += 1
         return iter(self.responses[idx])
+
+
+@pytest.fixture(autouse=True)
+def _isolate_memory_dir(monkeypatch, tmp_path):
+    """Every AgentSession.send() now persists a transcript to
+    ~/.aicoder/memory/<project_id>/conversation.json (for `aicoder
+    --continue`) — autouse so no test in this file (nearly all of which
+    exercise send() constantly, via _session() below) writes into the
+    developer's real ~/.aicoder/memory/."""
+    monkeypatch.setattr("core.config.MEMORY_DIR", tmp_path / "memory")
 
 
 def _session(responses):
@@ -121,6 +132,58 @@ def test_last_turn_complete_true_on_final_answer():
     s = _session([[AIMessageChunk(content="done")]])
     s.send("hi")
     assert s.last_turn_complete is True
+
+
+# ─── Transcript persistence — `aicoder --continue` ─────────────────────────────
+# The system prompt (index 0) is never persisted/restored — only what comes
+# after it — since it's rebuilt fresh from live repo state on every launch.
+
+def test_send_persists_a_transcript_after_the_turn():
+    s = _session([[AIMessageChunk(content="Hello!")]])
+    s.send("hi")
+    path = s._transcript_path()
+    assert path.exists()
+    saved = json.loads(path.read_text())
+    assert len(saved) == 2  # the human message + the AI's final answer
+
+
+def test_load_transcript_restores_messages_after_a_fresh_system_prompt():
+    s1 = _session([[AIMessageChunk(content="Hello!")]])
+    s1.send("hi")
+
+    s2 = AgentSession(s1.workspace)  # a fresh session — new system prompt
+    original_system = s2.messages[0]
+    loaded = s2.load_transcript()
+
+    assert loaded is True
+    assert s2.messages[0] is original_system  # system prompt untouched
+    assert len(s2.messages) == 3  # system + human + AI
+    assert isinstance(s2.messages[1], HumanMessage) and s2.messages[1].content == "hi"
+    assert isinstance(s2.messages[2], AIMessage) and s2.messages[2].content == "Hello!"
+
+
+def test_load_transcript_returns_false_when_nothing_saved():
+    s = _session([[AIMessageChunk(content="ignored")]])
+    assert s.load_transcript() is False
+    assert len(s.messages) == 1  # untouched — still just the system prompt
+
+
+def test_load_transcript_returns_false_on_corrupted_file():
+    s = _session([[AIMessageChunk(content="ignored")]])
+    path = s._transcript_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("not valid json{{{")
+    assert s.load_transcript() is False
+    assert len(s.messages) == 1
+
+
+def test_transcript_persists_even_when_a_turn_is_interrupted():
+    s = _session([[AIMessageChunk(content="ignored")]])
+    chunks = [AIMessageChunk(content="Hel"), AIMessageChunk(content="lo!")]
+    s.llm = _InterruptingLLM(s, chunks, interrupt_after=1)  # fires mid-stream
+    out = s.send("hi")
+    assert out == ""  # interrupted
+    assert s._transcript_path().exists()  # still saved (best-effort, in a finally)
 
 
 # ─── request_interrupt() — best-effort mid-turn cancellation (the TUI's Esc) ───
@@ -381,6 +444,94 @@ def test_model_command_direct_name_still_works_for_non_ollama_provider(tmp_path,
         assert "saved as your default" in capsys.readouterr().out
     finally:
         cfg.raw()["model"] = saved
+
+
+# ── Model-picker filtering — keep obviously-wrong-category models out ──────────
+# Ollama's /api/tags lists every locally-pulled model with no way to tell an
+# embedding-only model or a vision model from a coding model — so both
+# pickers filter their own "Installed" section rather than showing anything
+# pulled indiscriminately (a real mistake made live while testing /vision
+# model: an embedding model got picked by accident).
+
+def test_exclude_embedding_model_drops_the_configured_one():
+    from agent.loop import _exclude_embedding_model
+
+    cfg = SimpleNamespace(get=lambda *k, default=None: "nomic-embed-text-v2-moe"
+                          if k == ("knowledge", "embedding_model") else default)
+    installed = [
+        {"name": "qwen2.5-coder:7b", "size": 1},
+        {"name": "nomic-embed-text-v2-moe", "size": 1},
+    ]
+    result = _exclude_embedding_model(installed, cfg)
+    assert [m["name"] for m in result] == ["qwen2.5-coder:7b"]
+
+
+def test_exclude_embedding_model_noop_when_not_configured():
+    from agent.loop import _exclude_embedding_model
+
+    cfg = SimpleNamespace(get=lambda *k, default=None: default)
+    installed = [{"name": "qwen2.5-coder:7b", "size": 1}]
+    assert _exclude_embedding_model(installed, cfg) == installed
+
+
+def test_filter_vision_capable_keeps_known_families_drops_others():
+    from agent.loop import _filter_vision_capable
+
+    cfg = SimpleNamespace(vision_model="qwen2.5vl:7b")
+    installed = [
+        {"name": "qwen2.5vl:7b", "size": 1},       # known vision family
+        {"name": "llava:13b", "size": 1},          # known vision family
+        {"name": "qwen2.5-coder:7b", "size": 1},   # coding model — dropped
+        {"name": "nomic-embed-text-v2-moe", "size": 1},  # embedding — dropped
+    ]
+    result = {m["name"] for m in _filter_vision_capable(installed, cfg)}
+    assert result == {"qwen2.5vl:7b", "llava:13b"}
+
+
+def test_filter_vision_capable_keeps_a_custom_configured_model_regardless():
+    from agent.loop import _filter_vision_capable
+
+    # A model set directly in config.yaml that isn't in our curated
+    # VISION_MODELS families must still show as "installed", not get dropped.
+    cfg = SimpleNamespace(vision_model="my-custom-vlm:latest")
+    installed = [{"name": "my-custom-vlm:latest", "size": 1}]
+    assert _filter_vision_capable(installed, cfg) == installed
+
+
+def test_model_command_picker_excludes_the_embedding_model(tmp_path, monkeypatch, capsys):
+    import core.model as model_mod
+    from agent.loop import _handle_model_command
+    from rich.prompt import Prompt
+
+    cfg = _isolate_config(monkeypatch, tmp_path)
+    original = cfg.raw()["model"]["name"]
+    fake_models = [
+        {"name": original, "size": 1},
+        {"name": cfg.raw()["knowledge"]["embedding_model"], "size": 1},
+    ]
+    monkeypatch.setattr(model_mod, "list_ollama_models", lambda base_url: fake_models)
+    monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: ""))
+    _handle_model_command("", SimpleNamespace(llm=None, tools=[]))
+    out = capsys.readouterr().out
+    assert cfg.raw()["knowledge"]["embedding_model"] not in out
+
+
+def test_vision_model_command_picker_excludes_non_vision_models(tmp_path, monkeypatch, capsys):
+    import core.model as model_mod
+    from agent.loop import _handle_vision_model_command
+    from rich.prompt import Prompt
+
+    cfg = _isolate_config(monkeypatch, tmp_path)
+    original = cfg.raw()["vision"]["model"]
+    fake_models = [
+        {"name": original, "size": 1},
+        {"name": "qwen2.5-coder:7b", "size": 1},  # a coding model, happens to be pulled
+    ]
+    monkeypatch.setattr(model_mod, "list_ollama_models", lambda base_url: fake_models)
+    monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: ""))
+    _handle_vision_model_command()
+    out = capsys.readouterr().out
+    assert "qwen2.5-coder:7b" not in out
 
 
 # ── /model — curated "not yet installed" recommendations ────────────────────────
@@ -848,7 +999,7 @@ def test_vision_command_no_arg_shows_usage(capsys):
 def test_vision_command_missing_file_shows_error(tmp_path, capsys):
     from agent.loop import _handle_vision_command
 
-    session = SimpleNamespace(llm=None, tools=[], workspace=tmp_path)
+    session = SimpleNamespace(llm=None, tools=[], workspace=tmp_path, last_image_paths=[])
     _handle_vision_command(str(tmp_path / "nope.png"), session)
     assert "Image not found" in capsys.readouterr().out
 
@@ -889,6 +1040,55 @@ def test_vision_command_relative_path_resolves_against_workspace(tmp_path, monke
 
     loop_mod._handle_vision_command("shot.png", s)
     assert fake_vision.invoked_with is not None  # resolved and reached the vision model
+
+
+# ─── /vision follow-up — reuse the last attached image(s), no re-attach needed ──
+
+def test_vision_command_follow_up_reuses_last_images(tmp_path, monkeypatch):
+    import agent.loop as loop_mod
+
+    _isolate_config(monkeypatch, tmp_path / "cfg")
+    monkeypatch.setattr("core.model.is_model_pulled", lambda base_url, name: True)
+    fake_vision = _FakeVisionLLM()
+    monkeypatch.setattr(loop_mod, "get_chat_model", lambda **k: fake_vision)
+
+    s = _session([[AIMessageChunk(content="first answer")],
+                  [AIMessageChunk(content="second answer")]])
+    image = _fake_image(tmp_path)
+
+    loop_mod._handle_vision_command(f"{image} what's wrong?", s)
+    assert s.last_image_paths == [image]
+
+    # Second call: "what about the corner?" isn't a valid path — should reuse
+    # the same image rather than erroring "Image not found".
+    loop_mod._handle_vision_command("what about the corner?", s)
+    assert fake_vision.invoked_with is not None
+    [message] = fake_vision.invoked_with
+    assert message.content[0]["text"] == "what about the corner?"
+    assert message.content[1]["type"] == "image_url"  # the same image, reused
+    assert s.last_image_paths == [image]  # unchanged — still the same image
+
+
+def test_vision_command_invalid_path_with_no_prior_image_still_errors(tmp_path, capsys):
+    from agent.loop import _handle_vision_command
+
+    session = SimpleNamespace(llm=None, tools=[], workspace=tmp_path, last_image_paths=[])
+    _handle_vision_command("not a real path", session)
+    assert "Image not found" in capsys.readouterr().out
+
+
+def test_send_with_images_records_last_image_paths(tmp_path, monkeypatch):
+    import agent.loop as loop_mod
+
+    _isolate_config(monkeypatch, tmp_path / "cfg")
+    monkeypatch.setattr("core.model.is_model_pulled", lambda base_url, name: True)
+    monkeypatch.setattr(loop_mod, "get_chat_model", lambda **k: _FakeVisionLLM())
+
+    s = _session([[AIMessageChunk(content="ok")]])
+    image = _fake_image(tmp_path)
+    assert s.last_image_paths == []
+    s.send_with_images("hi", [image])
+    assert s.last_image_paths == [image]
 
 
 def test_vision_command_not_configured_shows_error_not_traceback(tmp_path, monkeypatch, capsys):
@@ -1012,3 +1212,29 @@ def test_vision_model_command_other_entry_prompts_and_switches(tmp_path, monkeyp
         assert cfg.raw()["vision"]["model"] == "minicpm-v:8b"
     finally:
         cfg.raw()["vision"]["model"] = original
+
+
+# ── run_agent_repl(continue_session=True) — the plain-REPL side of --continue ──
+
+def test_run_agent_repl_continue_resumes_a_saved_conversation(monkeypatch, tmp_path, capsys):
+    import agent.loop as loop_mod
+    from rich.prompt import Prompt
+
+    # Populate a saved transcript for this workspace directly via a session,
+    # the same way an earlier `aicoder` run would have (through send()).
+    prior = AgentSession(tmp_path)
+    prior.llm = ScriptedLLM([[AIMessageChunk(content="Sure, on it.")]])
+    prior.send("fix the login bug")
+
+    monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: "/exit"))
+    loop_mod.run_agent_repl(tmp_path, continue_session=True)
+    assert "Resumed the previous conversation" in capsys.readouterr().out
+
+
+def test_run_agent_repl_continue_with_nothing_saved_starts_fresh(monkeypatch, tmp_path, capsys):
+    import agent.loop as loop_mod
+    from rich.prompt import Prompt
+
+    monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: "/exit"))
+    loop_mod.run_agent_repl(tmp_path, continue_session=True)
+    assert "No previous conversation found" in capsys.readouterr().out

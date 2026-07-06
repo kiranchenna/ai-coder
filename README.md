@@ -193,6 +193,10 @@ aicoder --workspace ./another-project
 aicoder --model qwen2.5-coder:14b
 ```
 
+Conversations don't survive quitting `aicoder` by default — pick up where you
+left off with `aicoder --continue` (or `-c`), which resumes the most recent
+conversation for the current workspace instead of starting fresh.
+
 **On a real terminal, `aicoder` runs a full-screen chat UI** — a scrolling
 conversation with a pinned input box at the bottom, a "/" autocomplete
 dropdown for slash commands, arrow-key menus (`/model`, confirmations), and a
@@ -216,11 +220,20 @@ image and describes it, then your regular coding model acts on that
 description with its normal tools. Works the same way via `/vision <path>` if
 you'd rather point at a file than paste. You can paste more than one image
 before sending your message — all of them are described together in one go.
+Once the vision model has seen an image, a follow-up question with no path
+(`/vision what about the corner?`) asks about that same image again, so you
+don't have to re-attach it each time.
 
 Pick a different vision model with `/vision model` — the same arrow-key
 picker as `/model`, just for vision (installed models + a curated
 recommended list by tier, plus "Other…" for anything else), or switch
 straight to one with `/vision model <name>`.
+
+Clipboard image paste needs no extra setup on macOS or Windows. **On Linux**,
+it needs `wl-paste` (Wayland — from the `wl-clipboard` package) or `xclip`
+(X11) on your `PATH`; without either, Ctrl+V shows a one-time warning and
+falls back to plain text paste. `/vision <path>` always works regardless of
+platform, since it doesn't touch the clipboard at all.
 
 ---
 

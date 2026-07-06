@@ -517,17 +517,40 @@ class ChatInput(Input):
     Pillow's ImageGrab works and is independent of what the terminal forwards
     over stdin — an image has no text form to forward in the first place).
     So this checks the real clipboard for an image first, and only falls back
-    to the default text-paste behavior when there isn't one."""
+    to the default text-paste behavior when there isn't one.
+
+    Platform notes (from reading Pillow's ImageGrab source directly, not just
+    its docs): macOS shells out to `osascript`, no extra dependency. Windows
+    uses a bundled C extension, also no extra dependency. Linux needs
+    `wl-paste` (Wayland) or `xclip` (X11) on PATH — if neither is found,
+    grabclipboard() raises NotImplementedError (unlike a real "no image on
+    the clipboard", which just returns None on every platform), which is
+    handled below with a one-time notification pointing at the missing tool,
+    not a silent fall-through to text paste."""
 
     def action_paste(self) -> None:
-        try:
-            from PIL import Image, ImageGrab
-
-            clipboard_content = ImageGrab.grabclipboard()
-        except Exception:  # noqa: BLE001 — grabclipboard's platform support varies
-            clipboard_content = None
+        from PIL import Image, ImageGrab
 
         app = self.app
+        try:
+            clipboard_content = ImageGrab.grabclipboard()
+        except NotImplementedError:
+            # Linux only (per Pillow's own source): raised when neither
+            # wl-paste (Wayland) nor xclip (X11) is on PATH — unlike every
+            # other "no image on the clipboard" case on any platform, which
+            # just returns None. Worth a one-time, actionable notification
+            # rather than silently falling through to text paste, which would
+            # otherwise look like Ctrl+V just does nothing for an image.
+            if isinstance(app, AICoderApp):
+                app.notify(
+                    "Image paste needs 'xclip' (X11) or 'wl-clipboard' (Wayland) installed — "
+                    "falling back to text paste.",
+                    severity="warning", timeout=6,
+                )
+            clipboard_content = None
+        except Exception:  # noqa: BLE001 — clipboard access varies by platform/session
+            clipboard_content = None
+
         if isinstance(clipboard_content, Image.Image) and isinstance(app, AICoderApp):
             path = app.attach_pasted_image(clipboard_content)
             self.insert_text_at_cursor(f"[image: {path.name}] ")
@@ -571,9 +594,10 @@ class AICoderApp(App):
         Binding("escape", "interrupt_turn", "Interrupt", show=False),
     ]
 
-    def __init__(self, workspace: Path) -> None:
+    def __init__(self, workspace: Path, continue_session: bool = False) -> None:
         super().__init__()
         self.workspace = workspace
+        self.continue_session = continue_session
         self.session = None
         self.turn_start_time: float | None = None
         self.pending_images: list[Path] = []
@@ -632,6 +656,14 @@ class AICoderApp(App):
             return
 
         rich_log.write(_startup_banner(cfg, cfg.model_name, self.workspace, self.session))
+
+        if self.continue_session:
+            if self.session.load_transcript():
+                rich_log.write(f"[dim]↺ Resumed the previous conversation "
+                               f"({len(self.session.messages) - 1} message(s)).[/dim]")
+            else:
+                rich_log.write("[dim]No previous conversation found for this workspace — "
+                               "starting fresh.[/dim]")
         if self.session.instructions:
             rich_log.write("[dim]📄 Loaded project instructions (AICODER.md).[/dim]")
         planner = Planner(self.workspace, self.session)
@@ -719,7 +751,9 @@ class AICoderApp(App):
             )
 
 
-def run(workspace: Path) -> None:
-    """Entry point used by cli.py when output is a real terminal."""
-    AICoderApp(workspace).run()
+def run(workspace: Path, continue_session: bool = False) -> None:
+    """Entry point used by cli.py when output is a real terminal.
+    continue_session (`aicoder --continue`): resume the most recently saved
+    conversation for this workspace instead of starting fresh."""
+    AICoderApp(workspace, continue_session=continue_session).run()
     sys.stdout.flush()

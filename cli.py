@@ -86,6 +86,12 @@ Flags:
         action="store_true",
         help="Verify the configured model supports tool calling, then exit",
     )
+    parser.add_argument(
+        "--continue", "-c",
+        action="store_true",
+        dest="continue_session",
+        help="Resume the most recent conversation for this workspace instead of starting fresh",
+    )
 
     args = parser.parse_args()
 
@@ -131,10 +137,10 @@ Flags:
     # to the plain print-and-scroll REPL, which has always supported that.
     if sys.stdout.isatty() and sys.stdin.isatty():
         from agent.tui import run as run_tui
-        run_tui(workspace)
+        run_tui(workspace, continue_session=args.continue_session)
     else:
         from agent.loop import run_agent_repl
-        run_agent_repl(workspace=workspace)
+        run_agent_repl(workspace=workspace, continue_session=args.continue_session)
 
 
 def _run_ollama_preflight(cfg) -> None:

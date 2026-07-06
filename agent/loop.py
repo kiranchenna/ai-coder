@@ -195,6 +195,10 @@ class AgentSession:
     def __init__(self, workspace: Path):
         self.workspace = workspace
         self._interrupt = threading.Event()
+        # The images from the most recent send_with_images() call — lets a
+        # follow-up /vision <question> (no path) ask about the same image(s)
+        # again without re-attaching (see _handle_vision_command).
+        self.last_image_paths: list[Path] = []
         self.tools = build_tools(workspace)
         # Optional MCP server tools (no-op unless configured).
         from agent.mcp_client import MCPManager
@@ -246,6 +250,54 @@ class AgentSession:
         except _TurnInterrupted:
             console.print("\n[yellow]Interrupted — back to the prompt.[/yellow]")
             return ""
+        finally:
+            # Best-effort — a save failure (e.g. disk full) must never mask
+            # whatever this turn actually raised, or crash a successful one.
+            self._save_transcript()
+
+    def _transcript_path(self) -> Path:
+        from core.config import MEMORY_DIR, project_id
+
+        return MEMORY_DIR / project_id(self.workspace) / "conversation.json"
+
+    def _save_transcript(self) -> None:
+        """Persist the conversation (everything after the system prompt,
+        which is always rebuilt fresh on load rather than restored, since
+        repo state may have changed) so a later `aicoder --continue` can pick
+        up where this session left off."""
+        import json
+
+        from langchain_core.messages import messages_to_dict
+
+        try:
+            path = self._transcript_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(messages_to_dict(self.messages[1:]), indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception:  # noqa: BLE001 — best-effort persistence, never fatal
+            pass
+
+    def load_transcript(self) -> bool:
+        """Load a previously saved conversation for this workspace (if any)
+        and append it after the fresh system prompt. Returns whether
+        anything was actually loaded. Used by `aicoder --continue`."""
+        import json
+
+        from langchain_core.messages import messages_from_dict
+
+        path = self._transcript_path()
+        if not path.exists():
+            return False
+        try:
+            restored = messages_from_dict(json.loads(path.read_text(encoding="utf-8")))
+        except Exception:
+            return False
+        if not restored:
+            return False
+        self.messages = self.messages[:1] + restored
+        return True
 
     def request_interrupt(self) -> None:
         """Ask the current turn to stop as soon as it safely can — checked
@@ -305,6 +357,7 @@ class AgentSession:
         vision model, fold that description into a normal text turn, then run
         it through the ordinary agentic loop (tool calling, editing) with the
         regular coding model — completely unchanged from a plain send()."""
+        self.last_image_paths = list(image_paths)
         description = self.describe_images(image_paths, user_input)
         names = ", ".join(p.name for p in image_paths)
         augmented = (
@@ -737,6 +790,35 @@ def _build_model_menu(current_name: str, installed: list[dict], catalog: list) -
     return entries
 
 
+def _exclude_embedding_model(installed: list[dict], cfg) -> list[dict]:
+    """Drop the configured embedding model from a picker's installed list —
+    it's an embeddings-only model, never usable for chat or vision, but
+    Ollama's /api/tags has no way to distinguish it from a chat-capable one.
+    Used by both /model and /vision model."""
+    embedding_model = (cfg.get("knowledge", "embedding_model", default="") or "").strip()
+    if not embedding_model:
+        return installed
+    return [m for m in installed if m["name"] != embedding_model]
+
+
+def _filter_vision_capable(installed: list[dict], cfg) -> list[dict]:
+    """Keep only installed models that plausibly look vision-capable, for
+    /vision model's "Installed" section: a base tag matching a known
+    VISION_MODELS family, or whatever's already configured as vision.model
+    (so a custom choice set directly in config.yaml still shows correctly as
+    installed even if its family isn't in our curated list). A text coding
+    model you happen to have pulled shouldn't show up here just because it's
+    installed — "Other…" still covers anything not listed here."""
+    from core.model_catalog import VISION_MODELS
+
+    known_bases = {spec.tag.split(":")[0].lower() for spec in VISION_MODELS}
+    current = cfg.vision_model
+    return [
+        m for m in installed
+        if m["name"].split(":")[0].lower() in known_bases or m["name"] == current
+    ]
+
+
 def _model_menu_entries(cfg, installed: list[dict]) -> list[dict]:
     """`/model`'s entries: installed + RECOMMENDED_MODELS, marked against the
     active coding model."""
@@ -856,7 +938,7 @@ def _handle_model_command(arg: str, session: "AgentSession") -> None:
     from core.model import list_ollama_models
 
     try:
-        installed = list_ollama_models(cfg.model_base_url)
+        installed = _exclude_embedding_model(list_ollama_models(cfg.model_base_url), cfg)
     except Exception:
         console.print(
             "[yellow]⚠ Couldn't reach Ollama to list models.[/yellow]\n"
@@ -912,7 +994,7 @@ def _handle_vision_model_command(arg: str = "") -> None:
     from core.model import is_model_pulled, list_ollama_models
 
     try:
-        installed = list_ollama_models(cfg.model_base_url)
+        installed = _filter_vision_capable(list_ollama_models(cfg.model_base_url), cfg)
     except Exception:
         console.print(
             "[yellow]⚠ Couldn't reach Ollama to list models.[/yellow]\n"
@@ -974,7 +1056,18 @@ def _handle_vision_command(arg: str, session: "AgentSession") -> None:
     path = Path(path_str).expanduser()
     if not path.is_absolute():
         path = (session.workspace / path).resolve()
+
     if not path.exists() or not path.is_file():
+        # Not a valid path — a natural-language follow-up about the same
+        # image(s) as last time ("/vision what about the top-right corner?"),
+        # rather than requiring the image to be re-attached for every
+        # question. Only kicks in when there's something to follow up on.
+        if session.last_image_paths:
+            try:
+                session.send_with_images(arg, session.last_image_paths)
+            except RuntimeError as e:
+                console.print(f"[red]⚠ {e}[/red]")
+            return
         console.print(f"[red]⚠ Image not found: {path_str}[/red]")
         return
 
@@ -1286,7 +1379,8 @@ def _handle_command(raw: str, session: "AgentSession", workspace: Path) -> bool:
                 "[bold]/init[/bold]         analyze the codebase and write/update AICODER.md\n"
                 r"[bold]/model \[name][/bold] pick a model interactively, or switch straight to <name>" "\n"
                 r"[bold]/vision <path>[/bold] attach an image (or Ctrl+V to paste one) — a vision "
-                "model describes it, your coding model acts on that\n"
+                "model describes it, your coding model acts on that. Follow-up questions with "
+                "no path ('/vision what about the corner?') reuse the last image\n"
                 r"[bold]/vision model[/bold] pick the vision-capable model interactively, or "
                 "'/vision model <name>'\n"
                 "[bold]/status[/bold]       show workspace, model, provider, and dev-mode profile\n"
@@ -1432,10 +1526,12 @@ def _startup_banner(cfg, model_name: str, workspace: Path, session: "AgentSessio
     )
 
 
-def run_agent_repl(workspace: Path) -> None:
+def run_agent_repl(workspace: Path, continue_session: bool = False) -> None:
     """Interactive agent loop over the given workspace — the plain-terminal
     fallback used when output isn't a real tty (piped/scripted/tests). On a
-    real terminal, `aicoder` launches agent.tui.run() instead (see cli.py)."""
+    real terminal, `aicoder` launches agent.tui.run() instead (see cli.py).
+    continue_session (`aicoder --continue`): resume the most recently saved
+    conversation for this workspace instead of starting fresh."""
     from core.config import get_config
 
     from agent.planner import Planner
@@ -1462,6 +1558,13 @@ def run_agent_repl(workspace: Path) -> None:
     with console.screen(hide_cursor=False):
         console.print(_startup_banner(cfg, model_name, workspace, session))
 
+        if continue_session:
+            if session.load_transcript():
+                console.print(f"[dim]↺ Resumed the previous conversation "
+                              f"({len(session.messages) - 1} message(s)).[/dim]")
+            else:
+                console.print("[dim]No previous conversation found for this workspace — "
+                              "starting fresh.[/dim]")
         if session.instructions:
             console.print("[dim]📄 Loaded project instructions (AICODER.md).[/dim]")
         if planner.has_active_plan():

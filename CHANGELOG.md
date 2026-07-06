@@ -1,6 +1,47 @@
 # Changelog
 
 ## Unreleased
+- **Session resume: `aicoder --continue` (or `-c`).** A conversation doesn't
+  survive quitting `aicoder` by default; `--continue` resumes the most
+  recently saved one for the current workspace instead of starting fresh.
+  `AgentSession._save_transcript()`/`load_transcript()` persist everything
+  after the system prompt (via LangChain's `messages_to_dict`/
+  `messages_from_dict`, which round-trips tool calls and multimodal content
+  correctly) to `~/.aicoder/memory/<project_id>/conversation.json`, in a
+  `finally` block on every `send()` — an interrupted or failed turn still
+  saves its progress, and a save failure never masks whatever the turn
+  itself raised. The system prompt is never persisted/restored, always
+  rebuilt fresh from live repo state. Wired through both front-ends (the TUI
+  and the plain-REPL fallback). 11 new tests. Also fixed a **new** test-hygiene
+  bug this introduced: every test calling `AgentSession.send()` would now
+  write a real transcript file into the developer's actual
+  `~/.aicoder/memory/` — added an autouse fixture isolating `MEMORY_DIR` in
+  both `test_loop.py` and `test_tui.py` before this could ship.
+- **Model pickers now filter out obviously-wrong-category installed models.**
+  Ollama's `/api/tags` lists every locally-pulled model with no way to tell
+  an embedding-only model or a vision model from a coding model — a real
+  mistake made live while testing `/vision model` (picked the embedding model
+  by accident). `/model` now excludes the configured
+  `knowledge.embedding_model` from its "Installed" section; `/vision model`
+  only lists installed models matching a known `VISION_MODELS` family (or
+  whatever's already configured as `vision.model`). "Other…" still covers
+  anything not listed. 6 new tests.
+- **Cross-platform clipboard-paste robustness.** Read Pillow's
+  `ImageGrab.grabclipboard()` source directly (not just its docs): macOS
+  shells out to `osascript`, Windows uses a bundled C extension, neither
+  needs anything extra — but **Linux** requires `wl-paste` (Wayland) or
+  `xclip` (X11) on `PATH`, raising `NotImplementedError` if neither is found,
+  unlike every other "no image on the clipboard" case on any platform, which
+  just returns `None`. Previously silently swallowed by a broad
+  `except Exception`, indistinguishable from "nothing to paste" — now caught
+  specifically and surfaced as an actionable one-time notification instead.
+  Documented the Linux requirement in the README. 1 new test.
+- **Vision follow-ups reuse the last attached image(s).** Once an image has
+  been described, a follow-up question with no path
+  (`/vision what about the corner?`) asks about the same image(s) again
+  instead of erroring "Image not found" — no need to re-attach for every
+  question. Tracked via `AgentSession.last_image_paths`, set on every
+  `send_with_images()` call. 3 new tests.
 - **Vision: paste a screenshot with Ctrl+V, just like Claude Code.** Claude's
   model is natively multimodal; Ollama's local ecosystem splits vision and
   coding into separate model families (the curated coding catalog is

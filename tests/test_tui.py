@@ -17,6 +17,16 @@ from textual.widgets import Input, RichLog
 from agent.tui import AICoderApp, RichLogConsole, _patch_consoles
 
 
+@pytest.fixture(autouse=True)
+def _isolate_memory_dir(monkeypatch, tmp_path):
+    """AgentSession.send()/send_with_images() persist a transcript to
+    ~/.aicoder/memory/<project_id>/conversation.json (for `aicoder
+    --continue`) — autouse so no test here (several swap in a scripted LLM
+    and really call send()) writes into the developer's real
+    ~/.aicoder/memory/."""
+    monkeypatch.setattr("core.config.MEMORY_DIR", tmp_path / "memory")
+
+
 def _rendered_text(rich_log: RichLog) -> str:
     """Flatten a RichLog's current lines back into plain text for assertions."""
     return "\n".join("".join(seg.text for seg in strip) for strip in rich_log.lines)
@@ -75,6 +85,44 @@ async def test_app_mounts_and_shows_the_banner():
         assert "AICoder" in text
         assert str(ws) in text
         assert app.query_one("#prompt", Input).has_focus
+
+
+@pytest.mark.asyncio
+async def test_continue_session_resumes_a_previous_conversation():
+    ws = Path(tempfile.mkdtemp())
+
+    first = AICoderApp(ws)
+    async with first.run_test() as pilot:
+        await pilot.pause()
+        from langchain_core.messages import AIMessageChunk
+        first.session.llm = type("S", (), {
+            "stream": lambda self, msgs: iter([AIMessageChunk(content="Sure, on it.")]),
+        })()
+        inp = first.query_one("#prompt", Input)
+        inp.value = "fix the login bug"
+        await pilot.press("enter")
+        await first.workers.wait_for_complete()
+        await pilot.pause()
+
+    second = AICoderApp(ws, continue_session=True)
+    async with second.run_test() as pilot:
+        await pilot.pause()
+        text = _rendered_text(second.query_one("#chat", RichLog))
+        assert "Resumed the previous conversation" in text
+        from langchain_core.messages import HumanMessage
+        human_messages = [m for m in second.session.messages if isinstance(m, HumanMessage)]
+        assert any(m.content == "fix the login bug" for m in human_messages)
+
+
+@pytest.mark.asyncio
+async def test_continue_session_with_nothing_saved_starts_fresh():
+    ws = Path(tempfile.mkdtemp())
+    app = AICoderApp(ws, continue_session=True)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        text = _rendered_text(app.query_one("#chat", RichLog))
+        assert "No previous conversation found" in text
+        assert len(app.session.messages) == 1  # just the system prompt
 
 
 @pytest.mark.asyncio
@@ -813,6 +861,35 @@ async def test_ctrl_v_with_no_clipboard_image_falls_back_to_text_paste():
             await pilot.press("ctrl+v")  # must not crash; falls through to super().action_paste()
             await pilot.pause()
         assert app.pending_images == []
+
+
+@pytest.mark.asyncio
+async def test_ctrl_v_on_linux_without_xclip_notifies_instead_of_silent_failure():
+    # Pillow's ImageGrab.grabclipboard() raises NotImplementedError on Linux
+    # specifically when neither wl-paste nor xclip is on PATH (confirmed by
+    # reading its source) — every other "no image" case on any platform just
+    # returns None. Without this handling, Ctrl+V would silently do nothing,
+    # indistinguishable from "there's just no image on the clipboard".
+    from unittest.mock import patch
+
+    from agent.tui import ChatInput
+
+    ws = Path(tempfile.mkdtemp())
+    app = AICoderApp(ws)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        inp = app.query_one("#prompt", ChatInput)
+        inp.focus()
+        notified = []
+        app.notify = lambda *a, **k: notified.append((a, k))
+        with patch("PIL.ImageGrab.grabclipboard", side_effect=NotImplementedError()):
+            await pilot.press("ctrl+v")
+            await pilot.pause()
+        assert app.pending_images == []
+        assert notified
+        message, kwargs = notified[0]
+        assert "xclip" in message[0] and "wl-clipboard" in message[0]
+        assert kwargs.get("severity") == "warning"
 
 
 @pytest.mark.asyncio

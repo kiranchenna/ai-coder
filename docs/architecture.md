@@ -231,6 +231,13 @@ quality from a small model".
     `_run_model_picker`, extracted from `_handle_model_command` once a second
     caller needed it) rather than duplicating the grouping/highlighting/
     "Other…" logic a second time.
+12. **Conversations don't persist unless asked** — `aicoder --continue`
+    resumes the last saved conversation for the workspace; the default (no
+    flag) is always a fresh session, matching how the whole test suite (and
+    every other flag) already behaves. Persistence itself is unconditional
+    and best-effort on every `send()` (a `finally` block, so an interrupted
+    or failed turn still saves progress) — the opt-in is in *reading* it
+    back, not in whether it's written.
 
 ---
 
@@ -283,6 +290,16 @@ checks tool calling (native or text-recovered) for the configured model.
     {"id": 2, "title": "Add endpoints", "description": "...", "status": "pending"}
   ]
 }
+```
+
+**Conversation transcript** (`~/.aicoder/memory/<project_id>/conversation.json`,
+for `aicoder --continue`) — everything after the system prompt, via
+LangChain's `messages_to_dict`:
+```json
+[
+  {"type": "human", "data": {"content": "fix the login bug", ...}},
+  {"type": "ai", "data": {"content": "Found it — a stale session check.", "tool_calls": [], ...}}
+]
 ```
 
 **Developer Mode artifacts** (in the workspace under `docs/dev/`):

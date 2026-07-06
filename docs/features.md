@@ -188,6 +188,34 @@ the image directly:
   (not one filtered by "supports vision") since Ollama's vision and coding
   models are different model families, not a flag on one family.
 
+**Model pickers filter obviously-wrong-category installed models.** Ollama's
+`/api/tags` lists every locally-pulled model with no way to tell an
+embedding-only model or a vision model from a coding model apart. `/model`
+excludes the configured `knowledge.embedding_model` from its "Installed"
+section (it's never usable for chat); `/vision model` goes further and only
+lists installed models matching a known `VISION_MODELS` family (or whatever's
+already configured as `vision.model`) — a coding model you happen to have
+pulled won't show up there just because it's installed. "Other…" still
+covers anything not listed in either picker.
+
+---
+
+## Session resume (`aicoder --continue`)
+
+A conversation doesn't survive quitting `aicoder` by default — `--continue`
+(or `-c`) resumes the most recently saved one for the current workspace
+instead of starting fresh. `AgentSession._save_transcript()` persists
+everything after the system prompt (via LangChain's own
+`messages_to_dict`/`messages_from_dict`, which round-trips tool calls and
+multimodal content correctly) to
+`~/.aicoder/memory/<project_id>/conversation.json`, in a `finally` block on
+every `send()` call — so a turn that gets interrupted or errors still saves
+its progress, and a save failure (e.g. disk full) never masks whatever the
+turn itself raised. The system prompt itself is **never** persisted or
+restored — it's always rebuilt fresh from live repo state on the next
+launch, since the workspace may have changed since the conversation was
+saved.
+
 ---
 
 ## The agentic loop
