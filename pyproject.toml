@@ -26,6 +26,9 @@ dependencies = [
     "langchain-ollama>=1.0",
     "langchain-core>=1.0",
     "rich>=13.0.0",
+    "textual>=8.0",
+    "textual-autocomplete>=4.0",
+    "pillow>=10.0",
     "pyyaml>=6.0",
     "ddgs>=9.0.0",
     "httpx>=0.28",
@@ -59,13 +62,19 @@ include = ["core*", "tools*", "aicoder_cli*", "agent*", "rag*", "memory*", "devm
 "*" = ["*.yaml", "*.md"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.15"]
+dev = ["pytest>=8.0", "ruff>=0.15", "pytest-asyncio>=1.0"]
 mcp = ["mcp>=1.0"]
+# For model.provider: openai_compatible — any local server (llama.cpp server,
+# vLLM, LM Studio, text-generation-webui, LocalAI, ...) or hosted API (OpenAI,
+# OpenRouter, Groq, Together, ...) that speaks the OpenAI chat-completions
+# protocol. Not needed for the default Ollama provider.
+openai = ["langchain-openai>=1.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
+asyncio_mode = "auto"
 
 [tool.ruff]
 target-version = "py311"

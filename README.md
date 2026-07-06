@@ -1,6 +1,10 @@
-# AICoder ✨
+<p align="center">
+  <img src="assets/icon.png" alt="AICoder logo" width="128" height="128">
+</p>
 
-> A local, offline **agentic coding assistant** — it plans, reads and edits real code, runs commands and tests, researches the web, and remembers your project — all running on your own machine via [Ollama](https://ollama.com/). No API keys. No cloud. Your code never leaves your computer.
+<h1 align="center">AICoder ✨</h1>
+
+> A local, offline **agentic coding assistant** — it plans, reads and edits real code, runs commands and tests, researches the web, and remembers your project — all running on your own machine via [Ollama](https://ollama.com/) by default. No API keys required, nothing sent anywhere unless you invoke web research or explicitly opt into a different backend (see [Using a different backend](#using-a-different-backend-not-ollama)).
 
 ---
 
@@ -16,7 +20,7 @@
 - [Command-line usage](#command-line-usage)
 - [Talking to the agent](#talking-to-the-agent)
 - [In-session commands](#in-session-commands)
-- [Multi-step builds (`plan` / `resume`)](#multi-step-builds-plan--resume)
+- [Multi-step builds (`/plan` and `/resume`)](#multi-step-builds-plan-and-resume)
 - [Developer Mode](#developer-mode)
 - [The tools](#the-tools)
 - [Verifying changes (tests, lint, type-check)](#verifying-changes)
@@ -89,7 +93,7 @@ your message
 ## Requirements
 
 - **Python 3.11+**
-- **[Ollama](https://ollama.com/)** installed and running locally
+- **[Ollama](https://ollama.com/)** installed and running locally — if it isn't installed, `aicoder` detects that on startup and offers to install it for you (Ollama's own official installer, shown in full before running — say no anytime to install it yourself instead)
 - A pulled chat model (and, for web/document RAG, an embedding model)
 
 ---
@@ -106,6 +110,7 @@ Optional extras:
 
 ```bash
 pip install "ai-coder[mcp]"     # MCP server support
+pip install "ai-coder[openai]"  # non-Ollama backends (see "Using a different backend")
 ```
 
 ### From source (development)
@@ -145,7 +150,24 @@ The default is **`qwen2.5-coder:7b`** — a good balance of code quality and too
 
 Switch models with the in-session `/model` command — type `/model` alone for an interactive picker. It lists every model you've pulled (current one marked) **plus curated recommendations you haven't pulled yet**, grouped into the same three tiers above with a one-line reason for each; pick one and it pulls (with confirmation) and switches in one step. Or `/model <name>` to switch straight to a name you already know. Either way it's **saved as your default for new sessions**, not just this one. `aicoder --model <name>` overrides the model for one run only (without changing the saved default), and you can also edit `~/.aicoder/config.yaml` directly. Run `aicoder --selftest` after switching to confirm the model supports tool calling.
 
-> **Embeddings** (`nomic-embed-text` by default) are only needed for web research and document ingestion. Alternatives: `bge-m3`, `nomic-embed-text-v2-moe`.
+> **Embeddings** (`nomic-embed-text` by default) are only needed for web research and document ingestion. Alternatives: `bge-m3`, `nomic-embed-text-v2-moe`. Embeddings always go through Ollama regardless of which `model.provider` drives the agent (see below).
+
+### Using a different backend (not Ollama)
+
+Ollama is the default and needs no setup beyond what's above, but AICoder isn't tied to it. Set `model.provider: openai_compatible` in `~/.aicoder/config.yaml` to point at **any server or API that speaks the OpenAI chat-completions protocol** — which is nearly everything at this point:
+
+- **A local runtime sized to your hardware** — a heavy GPU box might run **vLLM** for higher throughput, a lighter machine might run **llama.cpp server** or **LM Studio**; **text-generation-webui** and **LocalAI** work too.
+- **A hosted API, with your own key** — OpenAI, OpenRouter, Groq, Together, or anything else that speaks the same protocol.
+
+```yaml
+model:
+  provider: openai_compatible
+  name: "your-model-id"                    # whatever your server/API expects
+  base_url: "http://localhost:8080/v1"     # or a hosted API's endpoint
+  api_key: ""                              # blank for local servers that don't check it
+```
+
+Needs the optional `langchain-openai` package: `pip install "ai-coder[openai]"` (a missing package gives a clean error, not a traceback). With a non-Ollama provider, the Ollama-specific startup checks and the rich `/model` picker (which lists/pulls Ollama models specifically) don't apply — `/model` instead shows your current provider/model/endpoint, and `/model <name>` still works to switch the model id on the same endpoint. RAG's embedding model always goes through Ollama regardless of this setting.
 
 ---
 
@@ -170,6 +192,35 @@ Point it at a different directory, or override the model for one session:
 aicoder --workspace ./another-project
 aicoder --model qwen2.5-coder:14b
 ```
+
+**On a real terminal, `aicoder` runs a full-screen chat UI** — a scrolling
+conversation with a pinned input box at the bottom, a "/" autocomplete
+dropdown for slash commands, arrow-key menus (`/model`, confirmations), and a
+live "thinking" indicator you can interrupt with Esc — the same overall shape
+as Claude Code's interface. It also runs in the alternate screen buffer (the
+same mode `vim`/`less`/`htop` use), so when you exit (`/exit`, Ctrl-D,
+Ctrl-C), your terminal is restored exactly as it was before, with no session
+trace left in your scrollback. If you want to keep a
+copy of what happened, run `/export` before exiting.
+
+Piped/redirected/scripted usage (e.g. `echo "..." | aicoder`, or anything run
+outside a real terminal) automatically falls back to a plain print-and-scroll
+REPL instead — the full-screen UI needs a real terminal to attach to.
+
+**Paste a screenshot with Ctrl+V, just like Claude Code.** Claude's own model
+is natively multimodal, but Ollama's local ecosystem splits vision and coding
+into separate model families — the curated coding models are all text-only.
+So this is a two-model handoff: a vision-capable Ollama model
+(`qwen2.5vl:7b` by default — see `vision.model` in the config) looks at the
+image and describes it, then your regular coding model acts on that
+description with its normal tools. Works the same way via `/vision <path>` if
+you'd rather point at a file than paste. You can paste more than one image
+before sending your message — all of them are described together in one go.
+
+Pick a different vision model with `/vision model` — the same arrow-key
+picker as `/model`, just for vision (installed models + a curated
+recommended list by tier, plus "Other…" for anything else), or switch
+straight to one with `/vision model <name>`.
 
 ---
 
@@ -211,34 +262,47 @@ The agent navigates the repo itself (it won't ask you where a file is — it sea
 
 ## In-session commands
 
-A few literal commands are handled by the REPL; everything else is a task for the agent.
+A few literal commands are handled by the REPL; everything else is a task for the agent. If you're coming from Claude Code, most of its slash commands have a direct equivalent here — `/init`, `/status`, `/context`, `/compact`, `/permissions`, `/model`, `/mcp`, `/review`, `/bug` all work the same way. (Some don't apply to a local, single-agent, no-accounts tool — `/login`, `/cost`, `/agents`, `/ide` — so they're not here.)
 
 | Command | Description |
 |---|---|
-| `plan <goal>` | Decompose a goal into an ordered, resumable task list and build it |
-| `resume` | Continue an in-progress plan |
-| `/model [name]` | Pick a model interactively (lists pulled models, current marked), or switch straight to `<name>` — either way, saved as your default |
+| `/develop [--fast] <idea>` | Developer Mode: role-driven SDLC design → build (`--fast` = no back-and-forth) |
+| `/dev [status\|build\|revisit <phase>\|resolve]` | Resume Developer Mode, or run a sub-step |
+| `/plan <goal>` | Decompose a goal into an ordered, resumable task list and build it |
+| `/resume` | Continue an in-progress plan |
+| `/init` | Analyze the codebase and write/update `AICODER.md` — takes effect immediately in this session |
+| `/model [name]` | With Ollama: pick a model interactively (lists pulled models, current marked), or switch straight to `<name>` — either way, saved as your default. With a different `model.provider`: shows your current model/endpoint; `/model <name>` still switches |
+| `/status` | Show the workspace, model, provider, and Developer Mode profile |
+| `/context` | Show conversation size vs. the auto-compaction budget |
+| `/compact` | Summarize older turns now — the same compaction that runs automatically, on demand |
+| `/permissions [shell\|files <mode>]` | View or change the shell/file confirmation modes without restarting |
+| `/review` | Ask the agent to review the current git diff for bugs and cleanup opportunities |
 | `/tools` | List all available tools (built-in + MCP) |
+| `/mcp` | List connected MCP servers and their tools |
+| `/hooks` | List configured lifecycle hooks |
 | `/diff` | Show the git diff of changes so far |
 | `/memory` | Show what's remembered about this project |
 | `/knowledge [learn <topic\|URL> \| clear \| clear all]` | Manage the RAG knowledge base (see below) |
+| `/export [file]` | Save this conversation to a markdown file (default: a timestamped name) |
+| `/doctor` | Diagnose the model/tool-calling setup without restarting (same check as `--selftest`) |
+| `/bug` | Where and what to include when reporting a problem |
 | `/clear` | Forget the current conversation (keeps saved memory) |
 | `/help` | List commands |
-| `exit` / `quit` | Leave the session |
+| `/exit` | Leave the session |
 
 ---
 
-## Multi-step builds (`plan` / `resume`)
+## Multi-step builds (`/plan` and `/resume`)
 
-For a large goal, use `plan`:
+For a large goal, use `/plan`:
 
 ```
-my-project> plan build a FastAPI todo service from docs/PRD.md
+my-project> /plan build a FastAPI todo service from docs/PRD.md
 ```
 
 AICoder decomposes the goal (grounded in any ingested document) into an ordered task list, then executes each task — reading/writing files and verifying as it goes — pausing for your confirmation between tasks.
 
-It's **resumable**: quit anytime, and next session type `resume` to continue from the first unfinished task. Plan state is saved under `~/.aicoder/memory/<project>/plan.json`.
+It's **resumable**: quit anytime, and next session type `/resume` to continue from the first unfinished task. Plan state is saved under `~/.aicoder/memory/<project>/plan.json`.
 
 ---
 
@@ -247,7 +311,7 @@ It's **resumable**: quit anytime, and next session type `resume` to continue fro
 For building real applications with full control, **Developer Mode** runs a **role-driven SDLC** — it discusses each stage with you (as a different expert role), captures every decision as an editable file, and only then builds. You stay in control of the tech stack, schema, architecture, flows, screens, and the exact code structure.
 
 ```
-my-project> develop a multi-tenant invoicing SaaS with Postgres and a React UI
+my-project> /develop a multi-tenant invoicing SaaS with Postgres and a React UI
 ```
 
 ### The phases
@@ -271,7 +335,7 @@ It walks these phases, each a **full back-and-forth discussion** with a role per
 | 13 | Coding Conventions | Tech Lead → writes `AICODER.md` |
 | 14 | Design Review | Design Reviewer (critiques all decisions before build) |
 
-In each design phase, type `done` to capture the decision, `skip` to skip, `revise` to restart, or `pause` to stop and resume later. The final **Design Review** doesn't propose a decision — it critiques the others (consistency, gaps, security/scale risks) and points you to `dev revisit <phase>` to fix anything.
+In each design phase, type `done` to capture the decision, `skip` to skip, `revise` to restart, or `pause` to stop and resume later. The final **Design Review** doesn't propose a decision — it critiques the others (consistency, gaps, security/scale risks) and points you to `/dev revisit <phase>` to fix anything.
 
 ### Artifacts you control
 
@@ -290,19 +354,19 @@ AICODER.md                # the coding conventions the build follows
 ### Build, revisit, resync
 
 ```
-develop <idea>        # start (or resume) the design
-develop --fast <idea> # design the whole thing in one pass (roles decide; no back-and-forth)
-dev                   # resume the design
-dev status            # show phase progress
-dev build             # turn the design into code — proposes a file plan you can
-                      #   edit (build_plan.json), then generates file-by-file and verifies
-dev revisit <phase>   # re-open a decision; if it changes, auto-resync the code to match
-dev resolve           # cross-phase review → fix the design contradictions → resync code
+/develop <idea>        # start (or resume) the design
+/develop --fast <idea> # design the whole thing in one pass (roles decide; no back-and-forth)
+/dev                   # resume the design
+/dev status            # show phase progress
+/dev build             # turn the design into code — proposes a file plan you can
+                       #   edit (build_plan.json), then generates file-by-file and verifies
+/dev revisit <phase>   # re-open a decision; if it changes, auto-resync the code to match
+/dev resolve           # cross-phase review → fix the design contradictions → resync code
 ```
 
-- **`dev build`** proposes the folder/file structure from the design + your conventions. **Edit `docs/dev/build_plan.json`** (paths, order, naming) and re-run to use your exact structure. It then generates each file — grounded in the spec + `AICODER.md`, shown as a diff, **resumable per file** — and closes the loop: a **compile check → tests → agentic-fix loop** (up to 3 rounds) gets the code actually running, even when the project lives in a subdirectory. It also writes `docs/dev/build_manifest.json` mapping each file to the design phases it implements.
-- **`dev revisit <phase>`** lets you change any decision later. If the decision changed and code was built, AICoder **auto-resyncs**: it diffs old→new and runs an agentic task to propagate the change through the code, then verifies.
-- **`dev resolve`** reviews every phase together, lists the cross-phase contradictions (e.g. a schema that stores plaintext despite an end-to-end-encryption promise, or an auth mechanism that disagrees with the security phase), and for each one you accept it **rewrites the offending phase's decision and auto-resyncs the code**. It catches blunt contradictions reliably; subtle ones a small local model can't reason through may still need a manual `dev revisit`.
+- **`/dev build`** proposes the folder/file structure from the design + your conventions. **Edit `docs/dev/build_plan.json`** (paths, order, naming) and re-run to use your exact structure. It then generates each file — grounded in the spec + `AICODER.md`, shown as a diff, **resumable per file** — and closes the loop: a **compile check → tests → agentic-fix loop** (up to 3 rounds) gets the code actually running, even when the project lives in a subdirectory. It also writes `docs/dev/build_manifest.json` mapping each file to the design phases it implements.
+- **`/dev revisit <phase>`** lets you change any decision later. If the decision changed and code was built, AICoder **auto-resyncs**: it diffs old→new and runs an agentic task to propagate the change through the code, then verifies.
+- **`/dev resolve`** reviews every phase together, lists the cross-phase contradictions (e.g. a schema that stores plaintext despite an end-to-end-encryption promise, or an auth mechanism that disagrees with the security phase), and for each one you accept it **rewrites the offending phase's decision and auto-resyncs the code**. It catches blunt contradictions reliably; subtle ones a small local model can't reason through may still need a manual `/dev revisit`.
 
 ### Greenfield and existing repos
 
@@ -313,7 +377,7 @@ dev resolve           # cross-phase review → fix the design contradictions →
 
 A local 7B model doesn't know which parts of a domain are hard, and it writes a weak first draft. Developer Mode compensates with **engineering, not a bigger model**. The levers are bundled into a single `devmode.profile` dial — **`fast`** (reflect only), **`balanced`** (the default: reflect + consistency + build-review), or **`thorough`** (everything, including best-of-N). You can still override any individual lever in config.
 
-> **Why these defaults?** A lever ablation (see [`evals/`](evals/)) on the security-design phase found that **`reflect` carries essentially all of the quality gain** (+2.0/10, 70%→100% checklist coverage, for ~20% added time), while **`best_of` only pays with a stronger judge** — with a same-strength self-judge it added latency without quality. So `balanced` keeps reflect and drops best-of, and **`best_of` is gated on `judge_model`**: it only fires when you've configured a stronger critic model to rank the candidates. Two more evals back the rest of `balanced`: `consistency_check` measured **100% precision / 60% recall** (caught every *blatant* cross-phase contradiction with zero false alarms, missed the *subtle* ones — so it stays as cheap insurance while subtle conflicts still want a manual `dev revisit`), and `build_review` measured a **100% placeholder-removal rate** with clean drafts left intact. Run them yourself: `python -m evals.run_eval`, `run_consistency_eval`, `run_build_review_eval`.
+> **Why these defaults?** A lever ablation (see [`evals/`](evals/)) on the security-design phase found that **`reflect` carries essentially all of the quality gain** (+2.0/10, 70%→100% checklist coverage, for ~20% added time), while **`best_of` only pays with a stronger judge** — with a same-strength self-judge it added latency without quality. So `balanced` keeps reflect and drops best-of, and **`best_of` is gated on `judge_model`**: it only fires when you've configured a stronger critic model to rank the candidates. Two more evals back the rest of `balanced`: `consistency_check` measured **100% precision / 60% recall** (caught every *blatant* cross-phase contradiction with zero false alarms, missed the *subtle* ones — so it stays as cheap insurance while subtle conflicts still want a manual `/dev revisit`), and `build_review` measured a **100% placeholder-removal rate** with clean drafts left intact. Run them yourself: `python -m evals.run_eval`, `run_consistency_eval`, `run_build_review_eval`.
 
 The levers, each independently toggleable:
 
@@ -325,10 +389,10 @@ The levers, each independently toggleable:
 - **Cross-phase consistency check** (`consistency_check`) — after each phase, its decision is checked against the earlier ones and contradictions are flagged (and logged to `docs/dev/consistency_notes.md`).
 - **Build self-review** (`build_review`) — every generated file is critiqued for bugs, placeholders, and convention misses, then fixed, before it's written.
 - **Build verify→fix loop** — after generation, a compile check → tests → agentic-fix loop (≤3 rounds) gets the code actually running, not just plausible-looking.
-- **`dev resolve`** — turns those contradictions into fixes: it rewrites the offending phase and auto-resyncs the code.
+- **`/dev resolve`** — turns those contradictions into fixes: it rewrites the offending phase and auto-resyncs the code.
 - **Hybrid judging** (`judge_model`, opt-in) — point the *critic* steps (best-of judging, consistency, review) at a stronger model while generation stays local — the cheapest way to push past what a 7B can reason through.
 
-> Reality check: these levers measurably lift output — the `evals/` harness shows `reflect` taking a security-design phase from 7.5 to 9.5/10, `consistency_check` catching every blatant cross-phase contradiction (100% precision / 60% recall), and `build_review` removing 100% of planted placeholders. But a local 7B is still a strong *assistant*, not an autonomous senior engineer — review the generated code, lean on the verify step, and use `dev resolve` / `dev revisit` to correct decisions. Subtle contradictions a 7B can't reason through may still slip past. The design/decision artifacts are valuable on their own, regardless of model strength.
+> Reality check: these levers measurably lift output — the `evals/` harness shows `reflect` taking a security-design phase from 7.5 to 9.5/10, `consistency_check` catching every blatant cross-phase contradiction (100% precision / 60% recall), and `build_review` removing 100% of planted placeholders. But a local 7B is still a strong *assistant*, not an autonomous senior engineer — review the generated code, lean on the verify step, and use `/dev resolve` / `/dev revisit` to correct decisions. Subtle contradictions a 7B can't reason through may still slip past. The design/decision artifacts are valuable on their own, regardless of model strength.
 
 ---
 
@@ -500,9 +564,10 @@ Auto-created at `~/.aicoder/config.yaml` on first run. Key settings (abridged):
 
 ```yaml
 model:
-  provider: ollama
-  name: qwen2.5-coder:7b          # any model you've pulled
+  provider: ollama                # ollama | openai_compatible (see "Using a different backend")
+  name: qwen2.5-coder:7b          # any model you've pulled (or your other backend's model id)
   base_url: http://localhost:11434
+  api_key: ""                     # openai_compatible only; blank for local servers with no auth
   temperature: 0.3                # conversational
   temperature_precise: 0.1        # for precise/code output
   context_length: 16384           # num_ctx; also drives history-compaction budget
@@ -644,10 +709,12 @@ Being honest about the tradeoffs:
 
 ## Troubleshooting
 
+- **"Ollama isn't installed"** — say yes to the install prompt (it runs Ollama's own official installer), or install manually from [ollama.com](https://ollama.com/).
 - **"Cannot reach Ollama" / model warnings** — make sure Ollama is running (`ollama serve`) and the model is pulled (`ollama pull qwen2.5-coder:7b`).
 - **`--selftest` says the model can't call tools** — switch to a stronger model (`aicoder --model qwen2.5-coder:7b`).
 - **Web research / `read_document` says it couldn't ingest** — pull an embedding model (`ollama pull nomic-embed-text`).
 - **MCP servers don't load** — install the extra (`pip install "ai-coder[mcp]"`) and check the server `command`/`args` in your config.
+- **"model.provider is 'openai_compatible' but... isn't installed"** — install the extra: `pip install "ai-coder[openai]"`.
 - **Edits get declined / the agent loops** — small models sometimes struggle; rephrase, or switch to a larger model.
 - **See your settings** — `aicoder --config`.
 

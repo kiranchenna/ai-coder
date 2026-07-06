@@ -22,10 +22,12 @@ ai-coder/
 │   ├── code_index.py           # ctags-style symbol index (find_symbol)
 │   ├── model.py                # ChatOllama factory + tool-call recovery + selftest
 │   ├── model_catalog.py        # Curated /model recommendations by tier (fast/balanced/powerful)
+│   ├── ollama_install.py       # Detect + offer to install Ollama itself (cli.py's pre-flight check)
 │   └── project.py              # Test- & lint-command detection
 │
 ├── agent/                      # The agentic core
-│   ├── loop.py                 # Tool-calling loop, REPL, slash commands
+│   ├── loop.py                 # Tool-calling loop, plain-REPL fallback, slash commands
+│   ├── tui.py                  # Full-screen chat UI (Textual) — the default on a real terminal
 │   ├── tools.py                # The 19 agent tools
 │   ├── planner.py              # Decompose + run resumable task plans
 │   ├── hooks.py                # Lifecycle hooks (Pre/PostToolUse, Stop)
@@ -75,7 +77,10 @@ not in the repo.
 |---|---|---|
 | LLM | langchain-ollama | 1.0+ |
 | LLM core | langchain-core | 1.0+ |
-| Terminal UI | rich | 13.0+ |
+| Terminal rendering | rich | 13.0+ |
+| Full-screen chat UI | textual | 8.0+ |
+| "/" autocomplete | textual-autocomplete | 4.0+ |
+| Clipboard image paste | pillow | 10.0+ |
 | Web search | ddgs (DuckDuckGo) | 9.0+ |
 | HTTP | httpx | 0.28+ |
 | HTML parsing | beautifulsoup4 | 4.12+ |
@@ -93,9 +98,12 @@ not in the repo.
 
 ```
 cli.py
-  └── run_agent_repl() [agent/loop.py]
-        ├── "plan <goal>"  →  agent/planner.py  →  task list → AgentSession per task
-        ├── "/command"     →  _handle_command (model/tools/memory/clear)
+  ├── real terminal      →  agent.tui.run() [agent/tui.py] — full-screen chat UI
+  └── piped/scripted     →  run_agent_repl() [agent/loop.py] — plain print-and-scroll fallback
+        │  (both funnel into the same business logic below)
+        ├── "/command"     →  _handle_command — all structured commands, incl.
+        │                      /develop, /dev, /plan (→ agent/planner.py → task
+        │                      list → AgentSession per task), /resume, /model, …
         └── plain English  →  AgentSession.send():
                                  model.stream(history + tools)  (live tokens)
                                    ├── native tool_calls → execute → feed back
@@ -112,12 +120,18 @@ Tools touch the workspace (read/write code, run shell/tests) and `~/.aicoder/`
 
 - File: `~/.aicoder/config.yaml` (auto-created on first run)
 - Default model: `qwen2.5-coder:7b` via Ollama at `http://localhost:11434`
+- `model.provider` also accepts `openai_compatible` — any local server (llama.cpp
+  server, vLLM, LM Studio, ...) or hosted API that speaks the OpenAI
+  chat-completions protocol, sized to the user's own hardware/preference. See
+  `core/model.py`'s `get_chat_model()`/`_build_openai_compatible()` for the
+  branch, and the README's "Using a different backend" for setup.
 
 ```yaml
 model:
-  provider: ollama
+  provider: ollama                # ollama | openai_compatible
   name: qwen2.5-coder:7b
   base_url: http://localhost:11434
+  api_key: ""                     # openai_compatible only
   temperature: 0.3
   temperature_precise: 0.1
   context_length: 16384
@@ -131,6 +145,11 @@ files:
 
 knowledge:
   embedding_model: "nomic-embed-text"
+
+vision:
+  model: qwen2.5vl:7b            # used only when an image is attached (Ctrl+V
+                                  # paste in the TUI, or /vision <path>) — the
+                                  # two-model handoff; "" disables it
 
 devmode:                       # Developer Mode quality levers (one dial)
   profile: balanced            # fast | balanced | thorough
@@ -170,14 +189,48 @@ quality from a small model".
    confirmation modes; overwritten files are backed up.
 5. **Sandboxed file ops** — all paths resolved against the workspace root;
    traversal is rejected.
-6. **Resumable plans** — `plan <goal>` saves task state after each step so a build
+6. **Resumable plans** — `/plan <goal>` saves task state after each step so a build
    resumes after a quit.
-7. **Strictly local** — no cloud, no API keys; all data under `~/.aicoder/`.
+7. **Local by default, not local by force** — Ollama (no cloud, no API keys) is
+   the default and needs no setup beyond it. `model.provider: openai_compatible`
+   is an explicit opt-in for a different local runtime sized to the user's own
+   hardware (vLLM, llama.cpp server, LM Studio, ...) or a hosted API with the
+   user's own key — never on unless configured. RAG/embeddings stay on Ollama
+   regardless of `model.provider`. All data still lives under `~/.aicoder/`.
 8. **Evidence-based quality levers** — the Developer Mode levers are validated by
    a local eval harness (`evals/`), not assumed. The default `balanced` profile
    carries only the levers that measurably earned their latency; `best_of` is
    gated behind a stronger `judge_model` because the ablation showed it doesn't
    pay with a same-strength self-judge.
+9. **Optional extras stay optional** — `langchain-openai` (for `openai_compatible`)
+   and `mcp` are lazy-imported only when their feature is actually configured, so
+   a plain-Ollama install never pulls them in; a missing package gives a clean,
+   actionable error rather than a traceback.
+10. **Full-screen, trace-free terminal session** — a real terminal gets
+    `agent/tui.py`, a Textual chat UI in the alternate screen buffer (the same
+    mechanism vim/htop/Claude Code use), restoring the terminal exactly as
+    found on exit. Piped/redirected output falls back to `run_agent_repl`'s
+    plain print-and-scroll REPL, unaffected. Rather than reimplement every
+    slash-command handler and confirmation for the new UI, `agent/tui.py`
+    swaps in adapters (a `console.print`-compatible `RichLog` writer, and a
+    runtime monkeypatch of `rich.prompt.Confirm.ask`/`Prompt.ask` — the same
+    technique this project's own tests already use) so all of that existing,
+    already-tested business logic runs unchanged inside it.
+11. **Vision as a two-model handoff, not a unified capability** — unlike a
+    single multimodal model (e.g. Claude's), Ollama's local ecosystem splits
+    vision and coding into separate model families, and the curated coding
+    catalog is text-only. So an attached image (Ctrl+V paste, or
+    `/vision <path>`) is described in text by a separate vision model
+    (`vision.model`, built fresh, never persisted as the default driver, never
+    bound to the coding tools) before the regular coding model ever sees the
+    turn — the rest of the agentic loop is unaware anything visual was
+    involved at all. Because it's a genuinely separate model family (not a
+    "supports vision" flag on the coding catalog), `/vision model` gets its
+    own picker sourced from a distinct `VISION_MODELS` catalog — but reuses
+    `/model`'s picker machinery outright (`_build_model_menu`/
+    `_run_model_picker`, extracted from `_handle_model_command` once a second
+    caller needed it) rather than duplicating the grouping/highlighting/
+    "Other…" logic a second time.
 
 ---
 

@@ -58,3 +58,28 @@ RECOMMENDED_MODELS: list[ModelSpec] = [
     ModelSpec("qwen2.5-coder:32b", "powerful", 20.0,
               "Largest dense model in the qwen2.5-coder family"),
 ]
+
+# Vision-capable models for the two-model handoff (`/vision model`, `vision.
+# model` in config) — every tag confirmed to exist on ollama.com/library the
+# same way as RECOMMENDED_MODELS above. Ollama's local ecosystem keeps vision
+# and coding as separate model families, so this is a distinct catalog, not a
+# filter over RECOMMENDED_MODELS.
+VISION_MODELS: list[ModelSpec] = [
+    # ── Fast & light ──
+    ModelSpec("moondream:1.8b", "fast", 1.7,
+              "Tiny and fast — good for quick, simple 'what's on screen' checks"),
+    ModelSpec("qwen2.5vl:3b", "fast", 3.2,
+              "Smallest of the qwen2.5vl line; solid UI/screenshot understanding"),
+
+    # ── Balanced ──
+    ModelSpec("llava:7b", "balanced", 4.7,
+              "The long-established default vision model on Ollama"),
+    ModelSpec("minicpm-v:8b", "balanced", 5.5,
+              "Strong OCR/document-image reading alongside general vision"),
+    ModelSpec("qwen2.5vl:7b", "balanced", 6.0,
+              "The default here — good detail recognition for UI bugs/screenshots"),
+
+    # ── Powerful ──
+    ModelSpec("llama3.2-vision:11b", "powerful", 7.9,
+              "Meta's vision model; strong general image understanding"),
+]

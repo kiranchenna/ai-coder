@@ -1,6 +1,215 @@
 # Changelog
 
 ## Unreleased
+- **Vision: paste a screenshot with Ctrl+V, just like Claude Code.** Claude's
+  model is natively multimodal; Ollama's local ecosystem splits vision and
+  coding into separate model families (the curated coding catalog is
+  text-only), so this is a two-model handoff rather than one model seeing the
+  image directly.
+  - `ChatInput.action_paste` checks the *real* OS clipboard for an image via
+    Pillow's `ImageGrab.grabclipboard()` — confirmed independently that this
+    bypasses the terminal entirely (via `osascript` setting the clipboard,
+    then a real pty sending a raw Ctrl+V byte to the actual global install).
+    `Input`'s default Ctrl+V binding only pastes Textual's own `app.clipboard`
+    (text copied *within* the app), not the real system clipboard a
+    screenshot lands on. Falls back to normal text paste when there's no
+    image. A stray slash command never consumes a pending attachment.
+  - `AgentSession.describe_images`/`send_with_images`: a vision-capable model
+    (new `vision.model` config, default `qwen2.5vl:7b`, pulled with
+    confirmation on first use) describes the image in text via a multimodal
+    `HumanMessage` (base64-encoded image content) — built fresh, never bound
+    to the session's tools, never persisted as the default driver, unlike
+    `/model`. That description is folded into a normal text turn for the
+    regular coding model, so the rest of the agentic loop (tool calling,
+    editing) is completely unchanged from a plain turn.
+  - New `/vision <path>` command — the file-path equivalent, usable in both
+    front-ends. Deliberately not the sandboxed `resolve()` used by
+    `read_file`/`write_file`, since screenshots typically live outside the
+    workspace and this only reads bytes to show a model, not write/execute
+    anything.
+  - New `/vision model` picker, giving the same flexibility `/model` has but
+    for the vision model: installed models + a curated `VISION_MODELS`
+    catalog (`core/model_catalog.py`, a genuinely separate list from the
+    coding catalog — Ollama's vision and coding models are different model
+    families, not one family with a "supports vision" flag), grouped
+    sections, current model pre-highlighted, "Other…" escape hatch, and
+    `/vision model <name>` to switch straight to one — all via `/model`'s
+    existing picker machinery, generalized (`_build_model_menu`/
+    `_run_model_picker`, extracted from `_handle_model_command`) rather than
+    duplicated. Persists to `vision.model`, never touches the coding model.
+  - New dependency: `pillow>=10.0`.
+  - Caught and fixed two real bugs along the way: (1) a structural test
+    isolation gap — `_isolate_config` (three copies, one per test file)
+    redirected the config file path but never reset `get_config()`'s cached
+    module-level singleton, so an earlier test's in-memory mutation could leak
+    into a later "isolated" test regardless of the path redirect; discovered
+    because an earlier ad-hoc verification script (not a pytest test) had
+    actually corrupted the real `~/.aicoder/config.yaml`'s model name, and the
+    leaky singleton then propagated that into the suite. Fixed by also
+    resetting the cached singleton to `None` in all three copies. (2) A
+    `_pull_via_ollama` refactor (extracted from `_pull_arbitrary_model`) to
+    share the confirm+pull+report logic with the vision model's own pull flow.
+  - 22 new tests across `test_loop.py`/`test_tui.py`, verified live end to end
+    on the real global install (real clipboard image via `osascript`, real
+    Ctrl+V byte via a real pty) — stopping short of an actual vision-model
+    pull (a multi-GB download) for the live check; the two-model handoff
+    logic itself is covered by a scripted fake vision model in the test suite.
+- **Full-screen chat UI, matching Claude Code's interface.** On a real
+  terminal, `aicoder` now launches a Textual application (`agent/tui.py`)
+  instead of the plain print-and-scroll REPL: a scrolling chat log with a
+  pinned input box at the bottom, arrow-key menus, and a live "thinking"
+  indicator with an elapsed-time counter and esc-to-interrupt — the same
+  overall shape as Claude Code's UI. Piped/redirected/scripted output
+  (including the whole test suite) is unaffected — it still gets the original
+  `run_agent_repl` REPL, since a full-screen UI needs a real terminal.
+  - Every existing slash-command handler, confirmation prompt, and tool works
+    *unchanged* inside the new UI: a `console.print`-compatible adapter
+    (`RichLogConsole`) is swapped in for each module's `console` singleton,
+    and `rich.prompt.Confirm.ask`/`Prompt.ask` are monkeypatched for the
+    session's lifetime (the same technique this project's tests already use)
+    to route through a Textual modal — verified against real, unmodified call
+    sites (e.g. the file-write confirmation in `agent/tools.py`), not just
+    synthetic ones.
+  - `/model`'s picker gets a genuine arrow-key `OptionList` on top of the
+    generic bridge above — grouped under section headers (Installed /
+    Recommended — tier, skippable by arrow keys, not selectable) matching the
+    plain-REPL panel's own grouping, opening with the current model already
+    highlighted and checkmarked (✓) instead of always starting at the top —
+    the same picker style Claude Code uses (`ChoiceModal`'s `groups`/
+    `initial_index` params, reusable by future pickers). An "Other… (type any
+    Ollama model name)" entry covers anything beyond the curated
+    recommendations (Ollama has no API to browse its full library) —
+    `_handle_custom_model_entry` prompts for a tag, then pulls it (with
+    confirmation) if not already installed. `_pull_arbitrary_model` uses
+    `subprocess.run` with an argv list rather than `run_command`'s
+    `shell=True`, since the tag here is raw user input and shell-interpolating
+    it would be an injection risk (`_confirm_and_pull`'s existing shell path
+    stays as-is — it only ever sees our own hardcoded catalog tags).
+  - Typing `/` opens an autocomplete dropdown of every slash command (name +
+    description, from the new `SLASH_COMMANDS` list), narrowing as you type,
+    arrow keys + Tab/Enter to accept, Escape to dismiss — built on the
+    `textual-autocomplete` package, positioned above the input (it's docked at
+    the bottom with the Footer directly beneath it, so "below" has no room —
+    overrides the library's default downward placement). The dropdown gets out
+    of the way once the input already matches a command exactly, so a single
+    Enter runs it (otherwise the library's own Enter handling "completes" an
+    already-complete command instead of submitting it).
+  - `AgentSession` gained a real interrupt mechanism
+    (`request_interrupt`/`_TurnInterrupted`), checked between streamed chunks
+    and between tool-call steps — best-effort, since a chunk already arriving
+    over the network still has to land first.
+  - New dependencies: `textual>=8.0`, `textual-autocomplete>=4.0`. New dev
+    dependency: `pytest-asyncio` (for Textual's own headless `run_test()`
+    harness). 44 new tests, verified live in both a headless harness and a
+    real pty (byte-level checks of the alt-screen escape codes and the custom
+    cyan/gold theme actually rendering, plus a real, unmodified pipx global
+    install). Also fixed: a flaky-test race where the status-bar interval
+    timer could fire mid-teardown against an already-unmounted widget (now
+    stopped explicitly on unmount), and `_patch_prompts`'s restore
+    unconditionally deleting `Confirm.ask`/`Prompt.ask` instead of putting
+    back whatever was there before — broke any test that monkeypatches
+    Confirm/Prompt itself and *also* exercises the TUI in the same test.
+    Also fixed a real flaky-test race along the way: the status-bar interval
+    timer could fire mid-teardown and query an already-unmounted widget — now
+    stopped explicitly on unmount.
+- **Full-screen terminal session, like Claude Code's.** On a real terminal,
+  the REPL now runs inside Rich's `Console.screen()` — the same "alternate
+  screen buffer" mechanism `vim`/`less`/`htop` use: swaps to a separate, blank
+  screen for the session and restores the terminal to exactly what was there
+  before on exit (normal exit, `/exit`, Ctrl-D/Ctrl-C, or any error) — no trace
+  of the session left in your scrollback. A no-op when output isn't a real
+  terminal (piped/redirected/scripted usage, tests, CI — verified both ways:
+  the escape codes appear on a forced-terminal console and are absent on a
+  non-terminal one). Cursor stays visible (`hide_cursor=False`), since input is
+  still normal `Prompt.ask()`, not a custom raw-mode editor. Since scrollback
+  is gone after exit, `/export` is now the way to keep a copy of a
+  conversation. 2 new tests.
+- **BREAKING: `develop`, `dev`, `plan`, `resume`, and `exit`/`quit` now require
+  a leading `/`** (`/develop`, `/dev`, `/plan`, `/resume`, `/exit`/`/quit`/`/q`),
+  for one consistent command surface instead of five bare-word special cases
+  alongside every other command already being `/`-prefixed. Bare `exit`/`quit`
+  no longer quits — Ctrl-D/Ctrl-C still do, or use `/exit`. Typing the bare
+  word now (e.g. "plan a todo app") is just sent to the agent as a regular
+  message, same as any other unrecognized text. `_handle_command` now returns
+  a bool signaling whether the REPL should exit, instead of `run_agent_repl`
+  bare-word-matching `_EXIT_WORDS` itself (removed). Updated every usage
+  example across the README and docs accordingly. 17 new tests.
+- **10 new slash commands, mirroring Claude Code's, for anyone coming from
+  there.** `/init` (explore the codebase and write/update AICODER.md — reloads
+  the system prompt so it applies immediately, no restart), `/status`
+  (workspace/model/provider/profile on demand), `/context` (conversation size
+  vs. the compaction budget), `/compact` (force the same auto-compaction on
+  demand), `/permissions` (view/change shell & file confirmation modes without
+  restarting — reuses `Config.set_shell_confirmation`/`set_file_confirmation`),
+  `/review` (ask the agent to review the current git diff), `/mcp` (list
+  configured MCP servers, connection status, discovered tools — added
+  `MCPManager.status()`), `/hooks` (list configured lifecycle hooks), `/export
+  [file]` (save the conversation transcript to markdown), `/doctor` (the
+  `--selftest` diagnostic, callable without restarting). Deliberately did NOT
+  add commands that don't map onto this app's shape: `/login`/`/logout` (no
+  accounts), `/cost` (no token costs on a free local model), `/agents`
+  (single-agent design), `/ide` (no IDE integration), `/vim` (no full editor
+  input mode). 26 new tests (`tests/test_slash_commands.py`).
+  - **Found and fixed a real bug along the way**: the text-tool-call-recovery
+    fallback's injected placeholder (`"(Requested tools: X)"`) is stored as an
+    `AIMessage`, so it appears in history as the model's own prior turn — a
+    small model (observed with `qwen2.5-coder:7b`) tends to imitate the
+    *surface form* of its own previous turn, and would copy that terse,
+    request-shaped placeholder verbatim as a fake "tool call" on the next turn
+    instead of emitting a real one. Reworded it as a past-tense statement of
+    fact ("I already called `X` — its result is below") instead, which
+    eliminated that specific failure in testing.
+  - **Honest finding, not fully solved**: `/init` on a fresh multi-file
+    codebase didn't reliably complete explore→write in one shot on this 7B
+    model even after the fix above and three rounds of prompt refinement — it
+    sometimes narrates its next step in prose ("I'll call read_file...")
+    instead of calling it. The command's plumbing (prompt, tool execution,
+    instruction-reload) is verified correct; the remaining gap is this
+    specific local model's multi-turn follow-through, the same honest
+    small-model caveat documented elsewhere in this project. Larger models are
+    expected to be more reliable here, consistent with the project's existing
+    "bigger models help" guidance. If it stalls, just tell the agent to
+    continue — it's a normal conversational session, not an isolated mode.
+- **Official logo + a branded terminal startup banner.** Added `assets/icon.png`
+  (the app icon/logo), shown at the top of the README. The CLI's startup
+  banner now carries a small brand mark (`⟨❯_⟩ AICoder`) in the logo's cyan/amber
+  palette instead of plain magenta text — terminals can't render the actual
+  bitmap logo inline (no universal image protocol), so this is the in-terminal
+  equivalent, echoing the icon's bracket and `>_` cursor motifs.
+- **Support for non-Ollama backends via `model.provider: openai_compatible`.**
+  Ollama remains the default and needs no changes, but you can now point
+  AICoder at any server or API that speaks the OpenAI chat-completions
+  protocol — a local runtime sized to your hardware (llama.cpp server, vLLM,
+  LM Studio, text-generation-webui, LocalAI, ...) or a hosted API (OpenAI,
+  OpenRouter, Groq, Together, ...) with your own key. Configure via
+  `model.provider`, `model.base_url`, `model.name`, and the new
+  `model.api_key` (blank for local servers that don't check it) in
+  `config.yaml`. Needs the optional `langchain-openai` package
+  (`pip install "ai-coder[openai]"`) — omitted from the default install so
+  plain-Ollama users never pull it in; a missing package gives a clean,
+  actionable error instead of a traceback. The Ollama-specific startup
+  checks (install-offer, reachability) and the rich `/model` picker
+  (list/recommend/pull) only make sense for Ollama's own APIs, so they're
+  skipped for other providers in favour of a simpler "here's your current
+  model/endpoint, edit config.yaml or use `/model <name>` to change it"
+  message. Verified live end-to-end against a real OpenAI-compatible
+  endpoint (Ollama's own `/v1` shim) — including a genuine finding: native
+  tool-calling came back empty through that specific compat path, but the
+  model still emitted a valid tool call as text, and the app's *existing*
+  text-recovery fallback (built earlier for weaker local models) caught it
+  correctly — the safety net already in the codebase applies uniformly
+  across providers. 12 new tests (`tests/test_model_provider.py` +
+  additions to `test_config.py`, `test_cli.py`, `test_loop.py`).
+- **Offers to install Ollama itself if it's missing.** On startup, `cli.py` now
+  checks whether the `ollama` binary is on PATH at all (distinct from
+  "installed but not running," which was already handled) via
+  `core/ollama_install.py`. If it's missing, it shows Ollama's own official
+  install command in full and asks before running anything — declining, or a
+  non-interactive/no-stdin context, falls back cleanly to printing
+  ollama.com/download instead of crashing. Uses the same script for macOS and
+  Linux and the official PowerShell one-liner for Windows (verified against
+  ollama/ollama's own README, not guessed). 9 new tests
+  (`tests/test_ollama_install.py`, `tests/test_cli.py`).
 
 ## 3.1.0 - 2026-07-04
 - **Repo hygiene ahead of going public.** Added `CONTRIBUTING.md` (dev setup,

@@ -201,6 +201,24 @@ class MCPManager:
                 continue
         return tools
 
+    # ── Status ─────────────────────────────────────────────────────────────────
+
+    def status(self) -> list[dict]:
+        """Per-server summary: {"name", "connected", "tools": [tool names]} —
+        for the `/mcp` REPL command. Includes servers that failed to connect
+        (connected=False, tools=[]) so a misconfigured server is visible."""
+        from core.config import get_config
+
+        configured = get_config().get("mcp", "servers", default={}) or {}
+        by_server: dict[str, list[str]] = {}
+        for server, tdef in self._discovered:
+            by_server.setdefault(server, []).append(tdef.name)
+        return [
+            {"name": name, "connected": name in self._sessions,
+             "tools": sorted(by_server.get(name, []))}
+            for name in configured
+        ]
+
     # ── Shutdown ────────────────────────────────────────────────────────────────
 
     def shutdown(self) -> None:

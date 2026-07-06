@@ -10,9 +10,11 @@ Practical help for running AICoder. For *how it works* see
 
 If anything misbehaves, confirm these first — most issues are one of them:
 
-1. **Ollama is running** — `ollama serve` (or the desktop app). Check:
-   `curl http://localhost:11434/api/tags`.
-2. **The chat model is pulled** — `ollama pull qwen2.5-coder:7b`.
+1. **Ollama is installed and running** — if it's not installed at all, `aicoder`
+   detects that on launch and offers to install it for you; otherwise
+   `ollama serve` (or the desktop app). Check: `curl http://localhost:11434/api/tags`.
+2. **The chat model is pulled** — `ollama pull qwen2.5-coder:7b`, or use the
+   in-session `/model` picker.
 3. **The embedding model is pulled** (only for web research / documents) —
    `ollama pull nomic-embed-text`.
 4. **Tool calling works on your model** — `aicoder --selftest`.
@@ -27,15 +29,19 @@ See your active settings any time with `aicoder --config`.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| **"Cannot reach Ollama server"** | Ollama isn't running | `ollama serve` (or open the app); confirm `base_url` in `aicoder --config` |
+| **"Ollama isn't installed"** | never installed | say yes to the install prompt, or run the shown command yourself, or grab it from [ollama.com/download](https://ollama.com/download) |
+| **"Cannot reach Ollama server"** | installed but not running | `ollama serve` (or open the app); confirm `base_url` in `aicoder --config` |
 | **"Model '…' may not be pulled"** | model not downloaded | `ollama pull <model>` |
 | **`--selftest` says the model can't call tools** | weak/unsupported model | switch to `qwen2.5-coder:7b` or larger (`aicoder --model <name>`) |
 | **Web research / `read_document` "couldn't ingest"** | embedding model missing | `ollama pull nomic-embed-text`; RAG warns once at search time if it fails |
 | **`rag_search` returns nothing** | empty/irrelevant cache, or relevance cutoff | research the topic first (`/knowledge learn <topic>`); the cutoff drops unrelated chunks by design |
 | **Edits get declined / the agent loops** | small model struggling | rephrase the task, narrow it, or switch to a larger model |
-| **"Reached the step limit for this turn"** | task needed >12 tool steps | ask it to continue, or break the task up with `plan <goal>` |
+| **"Reached the step limit for this turn"** | task needed >12 tool steps | ask it to continue, or break the task up with `/plan <goal>` |
+| **`/init` stops after narrating what it'll do next, without doing it** | small model narrated instead of calling the tool | just say "continue" — it's a normal conversational session, not a special mode; a larger model tends to follow through more reliably |
 | **MCP servers don't load** | extra not installed / bad config | `pip install "ai-coder[mcp]"`; check the server `command`/`args` |
-| **Generated project won't run after `dev build`** | the verify→fix loop hit its 3-round cap | read the printed failure, fix manually, or re-run `dev build` / `dev revisit <phase>` |
+| **"model.provider is 'openai_compatible' but... isn't installed"** | extra not installed | `pip install "ai-coder[openai]"` |
+| **Using a non-Ollama provider, but RAG/research fails** | embeddings still require Ollama | RAG's embedding model always goes through Ollama, even with `model.provider: openai_compatible` — install/run Ollama for that, or skip RAG features |
+| **Generated project won't run after `/dev build`** | the verify→fix loop hit its 3-round cap | read the printed failure, fix manually, or re-run `/dev build` / `/dev revisit <phase>` |
 | **Design feels generic / too slow** | wrong `devmode.profile` | speed: set `profile: fast`; depth: `thorough` (+ a `judge_model`) |
 
 ---
@@ -59,6 +65,17 @@ one-line reason each. Pick a not-yet-pulled one and it downloads (with
 confirmation) and switches in one step; either way, the choice is saved as your
 default going forward.
 
+**What if I don't want to use Ollama at all?**
+Set `model.provider: openai_compatible` in `config.yaml` to point at a
+different local server sized to your own hardware (vLLM for a heavy GPU,
+llama.cpp server or LM Studio for something lighter, text-generation-webui,
+LocalAI, ...) or a hosted API with your own key (OpenAI, OpenRouter, Groq,
+Together, ...) — anything that speaks the OpenAI chat-completions protocol.
+Needs `pip install "ai-coder[openai]"`. The rich `/model` picker and the
+startup Ollama checks are specific to Ollama's own APIs, so they're skipped
+for other providers; you'll see your current model/endpoint instead. RAG's
+embedding model still requires Ollama regardless of this setting.
+
 **How good is it, really?**
 It's a strong *supervised* assistant, not an autonomous senior engineer. A local
 7B writes a weak first draft and can't reason through every subtle case — review
@@ -67,7 +84,7 @@ engineering (reflection, checklists, decomposition, review); those levers are
 measured in [`evals/`](../evals/README.md). The design artifacts it produces are
 valuable on their own, regardless of model strength.
 
-**Why is `dev build` / `develop` slow?**
+**Why is `/dev build` / `/develop` slow?**
 Each quality lever adds model calls, and local inference is the bottleneck. Use
 `devmode.profile: fast` for speed (reflect only — it carries most of the quality
 gain) or `balanced` (the default). `thorough` is the slowest and only adds
@@ -78,16 +95,23 @@ Yes. The agent works on any repo. Developer Mode is brownfield-aware: every phas
 is grounded in your codebase and the Conventions phase infers your existing style
 so generated code matches it.
 
-**What's the difference between `plan` and `develop`?**
-`plan <goal>` decomposes a goal into a resumable task list and builds it directly
-— good for a contained feature. `develop` runs the full role-driven SDLC (design
-in editable artifacts, then `dev build`) — good for designing a whole application
+**What's the difference between `/plan` and `/develop`?**
+`/plan <goal>` decomposes a goal into a resumable task list and builds it directly
+— good for a contained feature. `/develop` runs the full role-driven SDLC (design
+in editable artifacts, then `/dev build`) — good for designing a whole application
 with you in control of every decision.
 
 **How do I make it stop asking before every command / edit?**
 Shell: `--shell-mode smart` (asks only for destructive commands) or `never`.
 Files: set `files.confirmation: auto` (default — shows the diff, applies) or
 `never`. `always` is the safest. See "Safety" below.
+
+**My terminal looks empty / I can't scroll up to see what happened after exiting — where did it go?**
+AICoder runs full-screen on a real terminal (the same "alternate screen"
+mechanism `vim`/`htop`/Claude Code use) and hands your terminal back exactly as
+it was on exit — the session was never added to your normal scrollback in the
+first place, so there's nothing to scroll back to. Run `/export` *before*
+exiting to save a copy of the conversation to a file if you want to keep it.
 
 **Where is everything stored?**
 `~/.aicoder/config.yaml` (settings), `~/.aicoder/rag/chroma/` (knowledge base),

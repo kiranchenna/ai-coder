@@ -36,6 +36,26 @@ def test_default_model_name(tmp_path):
     assert cfg.model_name == "qwen2.5-coder:7b"
 
 
+def test_default_model_provider_is_ollama(tmp_path):
+    cfg = _make_config(tmp_path)
+    assert cfg.model_provider == "ollama"
+
+
+def test_model_provider_normalizes_case_and_whitespace(tmp_path):
+    cfg = _make_config(tmp_path, {"model": {"provider": " OpenAI_Compatible "}})
+    assert cfg.model_provider == "openai_compatible"
+
+
+def test_default_model_api_key_is_empty(tmp_path):
+    cfg = _make_config(tmp_path)
+    assert cfg.model_api_key == ""
+
+
+def test_model_api_key_explicit_value(tmp_path):
+    cfg = _make_config(tmp_path, {"model": {"api_key": "sk-test-123"}})
+    assert cfg.model_api_key == "sk-test-123"
+
+
 def test_default_shell_mode(tmp_path):
     cfg = _make_config(tmp_path)
     assert cfg.shell_confirmation == "always"

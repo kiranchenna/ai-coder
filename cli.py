@@ -118,8 +118,7 @@ Flags:
         print(yaml.dump(cfg.raw(), default_flow_style=False, sort_keys=False))
         sys.exit(0)
 
-    # ── Verify Ollama is available ─────────────────────────────────────────────
-    _check_ollama(cfg.model_base_url, cfg.model_name)
+    _run_ollama_preflight(cfg)
 
     # ── Self-test: confirm native tool calling, then exit ──────────────────────
     if args.selftest:
@@ -127,8 +126,26 @@ Flags:
         sys.exit(0 if selftest() else 1)
 
     # ── Launch the agent ───────────────────────────────────────────────────────
-    from agent.loop import run_agent_repl
-    run_agent_repl(workspace=workspace)
+    # A real terminal gets the full-screen chat UI (agent/tui.py); piped/
+    # redirected/scripted output (including the whole test suite) falls back
+    # to the plain print-and-scroll REPL, which has always supported that.
+    if sys.stdout.isatty() and sys.stdin.isatty():
+        from agent.tui import run as run_tui
+        run_tui(workspace)
+    else:
+        from agent.loop import run_agent_repl
+        run_agent_repl(workspace=workspace)
+
+
+def _run_ollama_preflight(cfg) -> None:
+    """Run the Ollama-specific pre-flight checks (install-offer + reachability)
+    only when `model.provider` is "ollama" — an openai_compatible endpoint (a
+    custom server or hosted API) has no equivalent "is it installed locally"
+    or "/api/tags" concept, so there's nothing to check for it here."""
+    if cfg.model_provider != "ollama":
+        return
+    _offer_install_ollama()
+    _check_ollama(cfg.model_base_url, cfg.model_name)
 
 
 def _check_ollama(base_url: str, model_name: str) -> None:
@@ -149,6 +166,53 @@ def _check_ollama(base_url: str, model_name: str) -> None:
             f"\n[yellow]⚠ Model '[bold]{model_name}[/bold]' may not be pulled yet.[/yellow]\n"
             f"[dim]Run: ollama pull {model_name}[/dim]\n"
         )
+
+
+def _offer_install_ollama() -> None:
+    """If the `ollama` binary isn't on PATH at all, offer to install it with
+    Ollama's own official command — shown in full, only run on explicit yes.
+    Never blocks: declining, or a non-interactive/no-stdin context, just falls
+    back to printing the manual download link."""
+    from core.ollama_install import DOWNLOAD_PAGE, install_command, is_ollama_installed
+
+    if is_ollama_installed():
+        return
+
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.prompt import Confirm
+
+    console = Console()
+    cmd = install_command()
+    console.print(
+        Panel(
+            f"[bold]{cmd}[/bold]",
+            title="[bold yellow]🦙 Ollama isn't installed[/bold yellow]",
+            subtitle=f"[dim]Official installer — see {DOWNLOAD_PAGE}[/dim]",
+            border_style="yellow",
+        )
+    )
+    try:
+        install_now = Confirm.ask("Install it now?", default=True)
+    except (EOFError, KeyboardInterrupt):
+        install_now = False
+
+    if not install_now:
+        console.print(f"[dim]Skipped. Install manually anytime: {DOWNLOAD_PAGE}[/dim]")
+        return
+
+    from tools.shell_tools import run_command
+
+    console.print("[dim]Installing — this can take a minute…[/dim]")
+    _out, err, code = run_command(cmd, timeout=600)
+    if code != 0 or not is_ollama_installed():
+        console.print(
+            f"[red]✗ Install did not complete successfully (exit {code}).[/red]"
+            + (f"\n{err.strip()[-500:]}" if err else "")
+            + f"\n[dim]Try manually: {DOWNLOAD_PAGE}[/dim]"
+        )
+        return
+    console.print("[green]✓ Ollama installed.[/green]")
 
 
 if __name__ == "__main__":

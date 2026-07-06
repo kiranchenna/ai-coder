@@ -59,18 +59,134 @@ commands are handled by the REPL (`agent/loop.py`):
 
 | Command | Description |
 |---|---|
-| `develop <idea>` | Developer Mode: role-driven SDLC design → build (see below) |
-| `dev …` | `dev` (resume) · `dev status` · `dev build` · `dev revisit <phase>` · `dev resolve` |
-| `plan <goal>` | Decompose a goal into an ordered, resumable task list and build it |
-| `resume` | Continue an in-progress plan |
-| `/model [name]` | `/model` alone opens an interactive picker: your pulled models (current marked) plus curated, not-yet-pulled recommendations grouped by fast/balanced/powerful tier — pick one to pull (with confirmation) and switch. `/model <name>` switches straight to a name you know. Either way the choice is persisted to `config.yaml` as the new default (mirrors Claude Code's `/model`) |
+| `/develop <idea>` | Developer Mode: role-driven SDLC design → build (see below) |
+| `/dev …` | `/dev` (resume) · `/dev status` · `/dev build` · `/dev revisit <phase>` · `/dev resolve` |
+| `/plan <goal>` | Decompose a goal into an ordered, resumable task list and build it |
+| `/resume` | Continue an in-progress plan |
+| `/init` | Have the agent explore the codebase and write/update `AICODER.md` (mirrors Claude Code's `/init`); reloads the system prompt so it takes effect immediately, no restart needed |
+| `/model [name]` | **Ollama provider (default):** `/model` alone opens an interactive picker: your pulled models (current marked) plus curated, not-yet-pulled recommendations grouped by fast/balanced/powerful tier — pick one to pull (with confirmation) and switch. `/model <name>` switches straight to a name you know. Either way the choice is persisted to `config.yaml` as the new default (mirrors Claude Code's `/model`). **Other providers:** `/model` shows the current provider/model/endpoint instead (no discovery API to pick from); `/model <name>` still switches the model id |
+| `/status` | Workspace, model, provider, and Developer Mode profile — the startup banner's content, on demand |
+| `/context` | Conversation size vs. the auto-compaction budget, as a percentage |
+| `/compact` | Force the same summarize-older-turns compaction `AgentSession` runs automatically, right now |
+| `/permissions` | Bare: show the shell/file confirmation modes. `/permissions shell\|files <mode>`: change and persist one, without restarting |
+| `/review` | Ask the agent to review the current `git_diff` for correctness bugs and cleanup opportunities |
 | `/tools` | List the agent's tools |
+| `/mcp` | List configured MCP servers, whether each connected, and their discovered tools |
+| `/hooks` | List configured `PreToolUse`/`PostToolUse`/`Stop` hooks |
 | `/diff` | Show the git diff of changes so far |
 | `/memory` | Show what's remembered about this project |
 | `/knowledge` | RAG: `/knowledge learn <topic\|URL>` researches & caches; bare shows stats; `/knowledge clear` clears this project's docs, `/knowledge clear all` wipes everything |
+| `/export [file]` | Write the conversation transcript to a markdown file (default: a timestamped name) in the workspace |
+| `/doctor` | Run the same tool-calling diagnostic as `aicoder --selftest`, without restarting |
+| `/bug` | The issues URL and what to include in a report |
 | `/clear` | Forget the conversation (keeps saved memory) |
 | `/help` | Show commands |
-| `exit` / `quit` | Leave the session |
+| `/exit` / `/quit` / `/q` | Leave the session |
+
+Most of these mirror a Claude Code command of the same name/purpose, so the
+muscle memory carries over. A few of Claude Code's commands don't map onto
+this app's shape (`/login`/`/logout` — no accounts; `/cost` — no token costs on
+a free local model; `/agents` — single-agent design, not a custom-subagent
+system; `/ide` — no IDE integration; `/vim` — the input prompt doesn't have a
+full editor mode) and were deliberately left out rather than faked.
+
+### Full-screen chat UI
+
+On a real terminal, `cli.py` launches `agent/tui.py` — a Textual application
+giving AICoder the same overall shape as Claude Code's interface: a scrolling
+chat log with a pinned input box at the bottom, arrow-key menus, and a live
+"thinking" indicator, all inside the alternate screen buffer (the same mode
+`vim`/`less`/`htop` use), so exiting (`/exit`, Ctrl-D, Ctrl-C, or any error)
+restores the terminal to exactly what was there before — no session trace
+left in your scrollback. Since scrollback is gone once you exit, use
+`/export` beforehand if you want to keep a copy of the conversation.
+
+Piped/redirected/scripted output (including the whole test suite) instead
+falls back to `run_agent_repl` — the original print-and-scroll REPL, unchanged
+— since a full-screen UI needs a real terminal to attach to.
+
+**Design: existing business logic, unchanged.** Rather than rewrite every
+slash-command handler and confirmation prompt for the new UI, `agent/tui.py`
+makes the *existing* code work inside it unchanged:
+- `RichLogConsole` is a drop-in replacement for `rich.console.Console` (the
+  actual call surface used everywhere: bare content, plus the odd `end=`/
+  `markup=`) that writes into the chat log instead of stdout — swapped in for
+  the `console` singleton every module already has.
+- `Confirm.ask`/`Prompt.ask` (both from `rich.prompt`) are monkeypatched for
+  the lifetime of the session — the same technique this project's own test
+  suite already uses, just applied at runtime — to route through a Textual
+  modal instead. Every existing confirmation across the app (shell/file
+  writes, the Ollama install offer, the devmode discuss loop, ...) becomes
+  TUI-native with zero changes to any of those call sites.
+- The `/model` picker additionally gets a genuine arrow-key `OptionList` (via
+  `ask_choice`/`is_tui_active`), on top of the generic bridge above — grouped
+  under section headers (Installed / Recommended — tier, skippable by arrow
+  keys, not selectable) matching the plain-REPL panel's own grouping, opening
+  with the current model already highlighted and checkmarked (✓) rather than
+  always starting at the top — the same picker style Claude Code uses. An
+  "Other… (type any Ollama model name)" entry at the end covers anything
+  beyond the curated recommendations (Ollama has no API to browse its full
+  library, so this list is a hand-picked subset, not everything available) —
+  picking it prompts for a model tag, then pulls it (with confirmation) if
+  not already installed, or switches straight to it if it is. Also reachable
+  directly without the picker at all: `/model <name>` always works, and
+  warns rather than silently failing if that name isn't pulled yet.
+- Blocking business logic (`AgentSession.send`) runs in a Textual worker
+  thread so the UI stays responsive; a real interrupt mechanism
+  (`AgentSession.request_interrupt`, checked between streamed chunks and
+  between tool-call steps) backs the status bar's "esc to interrupt" —
+  best-effort, since a chunk already arriving over the network still has to
+  land first, and how finely Ollama batches tokens per chunk isn't something
+  AICoder controls.
+
+**"/" autocomplete.** Typing `/` opens a dropdown of every slash command
+(name + one-line description, from `SLASH_COMMANDS` in `agent/loop.py`),
+narrowing as you keep typing; arrow keys navigate, Tab/Enter accepts (leaving
+the cursor ready to type an argument), Escape dismisses. Once the input
+already matches a command exactly, the dropdown gets out of the way so a
+single Enter runs it — otherwise `AutoComplete`'s own Enter handling would
+"complete" an already-complete command instead of submitting it, silently
+requiring two Enters. Built on the `textual-autocomplete` package.
+
+**Vision: paste a screenshot with Ctrl+V.** Claude's model is natively
+multimodal; Ollama's local ecosystem splits vision and coding into separate
+model families, so this is a two-model handoff rather than one model seeing
+the image directly:
+- `ChatInput.action_paste` (a small `Input` subclass) checks the *real* OS
+  clipboard for an image via Pillow's `ImageGrab.grabclipboard()` — confirmed
+  independently (via `osascript` setting the clipboard, then a real pty
+  sending a raw Ctrl+V byte to the actual global install) that this bypasses
+  the terminal entirely. That's necessary because `Input`'s default Ctrl+V
+  binding only pastes Textual's own `app.clipboard` (text copied *within* the
+  app, e.g. via OSC 52), which isn't the same clipboard a screenshot lands
+  on — an image has no text form to forward over stdin in the first place.
+  Falls back to the normal text-paste behavior when there's no image.
+- The image is saved to a scratch temp file and queued (`AICoderApp.
+  pending_images`); a stray slash command never consumes a pending
+  attachment, only a real message submission does.
+- `AgentSession.describe_images`/`send_with_images` do the handoff: a
+  vision-capable model (`vision.model` in config, default `qwen2.5vl:7b`,
+  pulled on first use with confirmation) looks at the image and describes it
+  in text (via a multimodal `HumanMessage`, base64-encoded image content) —
+  built fresh through `get_chat_model(model=...)`, never bound to the
+  session's tools and never persisted as the default driver, unlike `/model`.
+  That description is folded into a normal text turn for the regular coding
+  model, so the rest of the agentic loop (tool calling, editing) is
+  completely unchanged from a plain turn.
+- `/vision <path>` is the file-path equivalent, usable in both front-ends
+  (deliberately *not* the sandboxed `resolve()` used by `read_file`/
+  `write_file` — screenshots typically live outside the workspace, e.g. the
+  Desktop, and this only reads bytes to show a model, not write/execute
+  anything).
+- `/vision model` picks the vision-capable model interactively — the exact
+  same picker `/model` uses (`_build_model_menu`/`_run_model_picker`, shared
+  rather than duplicated: grouped sections, current model pre-highlighted,
+  "Other…" escape hatch), just sourced from a separate `VISION_MODELS`
+  catalog (`core/model_catalog.py`) and persisting to `vision.model` instead
+  of `model.name`. `/vision model <name>` switches straight to `<name>`, same
+  shape as `/model <name>`. The two catalogs stay genuinely separate lists
+  (not one filtered by "supports vision") since Ollama's vision and coding
+  models are different model families, not a flag on one family.
 
 ---
 
@@ -99,14 +215,14 @@ keeps long sessions and large `plan` builds within the context window.
 
 ## Planning large tasks
 
-`plan <goal>` (`agent/planner.py`):
+`/plan <goal>` (`agent/planner.py`):
 
 - Asks the model for an ordered JSON task list, grounded in any ingested
   document via RAG.
 - Persists the plan to `~/.aicoder/memory/<project_id>/plan.json`.
 - Executes each task through the agent, saving status after every step, and
   pausing for confirmation between tasks.
-- **Resumable** — quit anytime; `resume` continues from the first pending task.
+- **Resumable** — quit anytime; `/resume` continues from the first pending task.
 
 ---
 
@@ -124,15 +240,15 @@ flags. The same discussion loop runs for every phase except the review-kind one.
   truth the build reads; conventions go to `AICODER.md`.
 - **Brownfield-aware** — for an existing repo every phase is grounded in the
   codebase and the Conventions phase infers your current style.
-- **`dev build`** (`devmode/build.py`) — proposes a file plan
+- **`/dev build`** (`devmode/build.py`) — proposes a file plan
   (`docs/dev/build_plan.json`, user-editable), then generates each file grounded
   in the spec + conventions (resumable per file), and **closes the loop**: a
   compile check → tests → agentic-fix loop (≤3 rounds, finds a nested project
   root) gets the code running. Writes `build_manifest.json` (file → phases).
-- **`dev revisit <phase>`** / **`dev resolve`** — change a decision, or
+- **`/dev revisit <phase>`** / **`/dev resolve`** — change a decision, or
   review→fix cross-phase contradictions; both **auto-resync** the code
   (`devmode/resync.py`) via an agentic diff→apply→verify task.
-- **`develop --fast <idea>`** — runs the whole design in one pass; each role
+- **`/develop --fast <idea>`** — runs the whole design in one pass; each role
   makes its own senior decisions with no back-and-forth (still applies the active
   profile's levers).
 
@@ -173,8 +289,8 @@ single reflected pass (a same-strength self-judge added latency without quality)
 
 **The honest ceiling:** subtle semantic contradictions a 7B can't reason through
 (e.g. a private key stored server-side that the artifact rationalizes as
-"encrypted at rest") may still pass — review the output, and use `dev revisit` /
-`dev resolve` for the subtle cases. See [`evals/README.md`](../evals/README.md).
+"encrypted at rest") may still pass — review the output, and use `/dev revisit` /
+`/dev resolve` for the subtle cases. See [`evals/README.md`](../evals/README.md).
 
 ---
 
@@ -231,6 +347,20 @@ single reflected pass (a same-strength self-judge added latency without quality)
   config: **PreToolUse** (non-zero exit blocks the tool), **PostToolUse**
   (auto-format/notify), **Stop** (turn finished). Matched by a regex on the tool
   name. Commands get a JSON payload on stdin + `AICODER_*` env vars. Opt-in.
+
+### Model providers (`core/model.py`)
+- Ollama is the default provider and needs no configuration beyond the
+  Requirements above. Set `model.provider: openai_compatible` in config.yaml
+  to instead point at any local server (llama.cpp server, vLLM, LM Studio,
+  text-generation-webui, LocalAI) or hosted API (OpenAI, OpenRouter, Groq,
+  Together, ...) that speaks the OpenAI chat-completions protocol — pick
+  whatever fits your hardware or preference. Set `model.base_url`,
+  `model.name`, and optionally `model.api_key` (blank for local servers that
+  don't check it). Requires `pip install "ai-coder[openai]"`; a missing
+  package raises a clean, actionable error rather than a traceback.
+  Ollama-specific behavior (the startup install-offer/reachability checks,
+  the rich `/model` picker) only runs for the `ollama` provider. RAG's
+  embedding model always goes through Ollama regardless of this setting.
 
 ### MCP servers (`agent/mcp_client.py`)
 - Optional [Model Context Protocol](https://modelcontextprotocol.io/) client.

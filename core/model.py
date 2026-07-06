@@ -84,9 +84,43 @@ def extract_text_tool_calls(content: str) -> list[dict]:
     return calls
 
 
+# A dummy key placeholder for openai_compatible servers that don't check
+# authentication at all (most local runtimes) — the OpenAI SDK requires a
+# non-empty string be passed even when the server ignores it.
+_NO_AUTH_PLACEHOLDER = "not-needed"
+
+
+def _build_openai_compatible(model_name: str, base_url: str, api_key: str, temperature: float):
+    """Build a ChatOpenAI pointed at any OpenAI-compatible endpoint — a local
+    server (llama.cpp server, vLLM, LM Studio, text-generation-webui,
+    LocalAI, ...) or a hosted API (OpenAI, OpenRouter, Groq, Together, ...).
+
+    Raises RuntimeError with an actionable message if the optional
+    `langchain-openai` package isn't installed, rather than silently falling
+    back to a different provider than the one explicitly configured.
+    """
+    try:
+        from langchain_openai import ChatOpenAI
+    except ImportError as e:
+        raise RuntimeError(
+            "model.provider is 'openai_compatible' but the 'langchain-openai' package "
+            'isn\'t installed. Run: pip install "ai-coder[openai]"'
+        ) from e
+
+    return ChatOpenAI(
+        model=model_name,
+        base_url=base_url,
+        api_key=api_key or _NO_AUTH_PLACEHOLDER,
+        temperature=temperature,
+    )
+
+
 def get_chat_model(precise: bool = False, tools: Sequence | None = None, model: str | None = None):
     """
-    Build a ChatOllama instance from the active config.
+    Build a chat model from the active config's `model.provider`:
+    "ollama" (default, via ChatOllama) or "openai_compatible" (via ChatOpenAI
+    pointed at a custom base_url — any local server or hosted API that speaks
+    the OpenAI chat-completions protocol).
 
     Args:
         precise: Use the low-temperature setting (for code/edits) instead of
@@ -96,17 +130,23 @@ def get_chat_model(precise: bool = False, tools: Sequence | None = None, model: 
                  AIMessages whose ``.tool_calls`` lists the model's requests.
 
     Returns:
-        A ChatOllama (or its tool-bound runnable) ready for ``.invoke()``.
+        A chat model (or its tool-bound runnable) ready for ``.invoke()``.
     """
     from core.config import get_config
 
     cfg = get_config()
-    llm = ChatOllama(
-        model=model or cfg.model_name,
-        base_url=cfg.model_base_url,
-        temperature=cfg.model_temperature_precise if precise else cfg.model_temperature,
-        num_ctx=cfg.model_context_length,  # default 16384; see DEFAULT_CONFIG
-    )
+    name = model or cfg.model_name
+    temperature = cfg.model_temperature_precise if precise else cfg.model_temperature
+
+    if cfg.model_provider == "openai_compatible":
+        llm = _build_openai_compatible(name, cfg.model_base_url, cfg.model_api_key, temperature)
+    else:
+        llm = ChatOllama(
+            model=name,
+            base_url=cfg.model_base_url,
+            temperature=temperature,
+            num_ctx=cfg.model_context_length,  # default 16384; see DEFAULT_CONFIG
+        )
     if tools:
         return llm.bind_tools(list(tools))
     return llm
