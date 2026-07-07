@@ -61,6 +61,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/init", "analyze the codebase and write/update AICODER.md"),
     ("/model", "pick a model interactively, or switch straight to <name>"),
     ("/vision", "attach an image by path (or 'model' to pick the vision-capable model)"),
+    ("/history", "list past sessions for this workspace, or view one in detail"),
     ("/status", "show workspace, model, provider, and dev-mode profile"),
     ("/context", "show conversation size vs. the compaction budget"),
     ("/compact", "summarize older turns now (usually automatic)"),
@@ -85,6 +86,18 @@ def _short(value, limit: int = 60) -> str:
     """One-line preview of a tool argument for display."""
     s = str(value).replace("\n", "\\n")
     return s if len(s) <= limit else s[:limit] + "…"
+
+
+def _log_safe(value, limit: int = 500):
+    """Truncate a value for the session log (see AgentSession._record_action)
+    — avoids bloating it with huge file contents/tool outputs; the action's
+    own `diffs` already carry the meaningful summary for a write."""
+    if isinstance(value, dict):
+        return {k: _log_safe(v, limit) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_log_safe(v, limit) for v in value]
+    s = str(value)
+    return s if len(s) <= limit else s[:limit] + f"…[+{len(s) - limit} chars truncated]"
 
 
 def _msg_text(m) -> str:
@@ -193,12 +206,23 @@ class AgentSession:
     """Holds conversation state and drives the tool-calling loop."""
 
     def __init__(self, workspace: Path):
+        from datetime import datetime, timezone
+
         self.workspace = workspace
         self._interrupt = threading.Event()
         # The images from the most recent send_with_images() call — lets a
         # follow-up /vision <question> (no path) ask about the same image(s)
         # again without re-attaching (see _handle_vision_command).
         self.last_image_paths: list[Path] = []
+        # One JSON file per session (never overwritten across sessions) at
+        # MEMORY_DIR/<project_id>/sessions/<session_id>.json — see
+        # _save_session_log/_record_turn. session_id doubles as the filename,
+        # so it's filesystem-safe (no colons) rather than pure ISO-8601.
+        now = datetime.now(timezone.utc)
+        self.session_id = now.strftime("%Y-%m-%dT%H-%M-%S-") + f"{now.microsecond:06d}"
+        self.session_started_at = now.isoformat()
+        self.session_turns: list[dict] = []
+        self._current_turn_actions: list[dict] = []
         self.tools = build_tools(workspace)
         # Optional MCP server tools (no-op unless configured).
         from agent.mcp_client import MCPManager
@@ -242,56 +266,94 @@ class AgentSession:
         """
         self.last_turn_complete = False
         self._interrupt.clear()
+        self._current_turn_actions = []
         self._compact_history_if_needed()
         self.messages.append(HumanMessage(content=user_input))
 
+        answer = ""
         try:
-            return self._run_steps()
+            answer = self._run_steps()
+            return answer
         except _TurnInterrupted:
             console.print("\n[yellow]Interrupted — back to the prompt.[/yellow]")
             return ""
         finally:
             # Best-effort — a save failure (e.g. disk full) must never mask
             # whatever this turn actually raised, or crash a successful one.
-            self._save_transcript()
+            # Records the turn even when interrupted/step-capped (answer ""),
+            # so partial progress is never silently lost from the log.
+            self.session_turns.append({
+                "prompt": user_input,
+                "actions": self._current_turn_actions,
+                "answer": answer,
+                "completed": self.last_turn_complete,
+            })
+            self._save_session_log()
 
-    def _transcript_path(self) -> Path:
+    def _sessions_dir(self) -> Path:
         from core.config import MEMORY_DIR, project_id
 
-        return MEMORY_DIR / project_id(self.workspace) / "conversation.json"
+        return MEMORY_DIR / project_id(self.workspace) / "sessions"
 
-    def _save_transcript(self) -> None:
-        """Persist the conversation (everything after the system prompt,
-        which is always rebuilt fresh on load rather than restored, since
-        repo state may have changed) so a later `aicoder --continue` can pick
-        up where this session left off."""
+    def _session_log_path(self) -> Path:
+        return self._sessions_dir() / f"{self.session_id}.json"
+
+    def _save_session_log(self) -> None:
+        """Persist this session — one JSON file per session, never
+        overwritten across different sessions (unlike the old single
+        conversation.json). Two things live in it: `turns` (prompt/actions
+        incl. real file diffs/answer — the human-analyzable log `/history`
+        reads) and `raw_messages` (everything after the system prompt, via
+        LangChain's messages_to_dict — what `aicoder --continue` restores).
+        The system prompt itself is never persisted, always rebuilt fresh."""
         import json
 
         from langchain_core.messages import messages_to_dict
 
         try:
-            path = self._transcript_path()
+            path = self._session_log_path()
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(
-                json.dumps(messages_to_dict(self.messages[1:]), indent=2, ensure_ascii=False),
+                json.dumps({
+                    "session_id": self.session_id,
+                    "workspace": str(self.workspace),
+                    "started_at": self.session_started_at,
+                    "turns": self.session_turns,
+                    "raw_messages": messages_to_dict(self.messages[1:]),
+                }, indent=2, ensure_ascii=False),
                 encoding="utf-8",
             )
         except Exception:  # noqa: BLE001 — best-effort persistence, never fatal
             pass
 
+    def _latest_session_file(self) -> Path | None:
+        """The most recently saved *other* session's file for this workspace
+        (never this session's own, freshly-created, still-empty one) —
+        session_id's timestamp format sorts correctly as plain strings."""
+        sessions_dir = self._sessions_dir()
+        if not sessions_dir.is_dir():
+            return None
+        candidates = sorted(
+            (p for p in sessions_dir.glob("*.json") if p.stem != self.session_id),
+            reverse=True,
+        )
+        return candidates[0] if candidates else None
+
     def load_transcript(self) -> bool:
-        """Load a previously saved conversation for this workspace (if any)
-        and append it after the fresh system prompt. Returns whether
-        anything was actually loaded. Used by `aicoder --continue`."""
+        """Load the most recently saved *other* session for this workspace
+        (if any) and append its messages after the fresh system prompt.
+        Returns whether anything was actually loaded. Used by
+        `aicoder --continue`."""
         import json
 
         from langchain_core.messages import messages_from_dict
 
-        path = self._transcript_path()
-        if not path.exists():
+        path = self._latest_session_file()
+        if path is None:
             return False
         try:
-            restored = messages_from_dict(json.loads(path.read_text(encoding="utf-8")))
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            restored = messages_from_dict(raw.get("raw_messages", []))
         except Exception:
             return False
         if not restored:
@@ -562,29 +624,50 @@ class AgentSession:
         args = call.get("args", {}) or {}
         tool = self.tools_by_name.get(name)
         if tool is None:
-            return (
+            result = (
                 f"ERROR: unknown tool '{name}'. "
                 f"Available tools: {', '.join(self.tools_by_name)}."
             )
+            self._record_action(name, args, result, [])
+            return result
 
         # PreToolUse hooks can block the call.
         block = self.hooks.pre_tool_use(name, args, self.workspace)
         if block is not None:
             console.print(f"[yellow]⛔ {name} blocked by hook: {block}[/yellow]")
-            return f"BLOCKED by a PreToolUse hook: {block}"
+            result = f"BLOCKED by a PreToolUse hook: {block}"
+            self._record_action(name, args, result, [])
+            return result
 
+        from agent.tools import _pending_diffs
+
+        del _pending_diffs[:]  # clear any leftovers before this call
         try:
             # StructuredTool validates args against the schema and raises on
             # bad input — surfaced back to the model so it can self-correct.
             result = str(tool.invoke(args))
         except Exception as e:  # noqa: BLE001 — report any tool failure to the model
             result = f"ERROR running {name}: {e}"
+        diffs = list(_pending_diffs)
+        del _pending_diffs[:]
 
         # PostToolUse hooks (auto-format, notify, …) may add a note.
         note = self.hooks.post_tool_use(name, args, result, self.workspace)
         if note:
             result += f"\n[hook] {note}"
+
+        self._record_action(name, args, result, diffs)
         return result
+
+    def _record_action(self, name: str, args: dict, result: str, diffs: list) -> None:
+        """Append this tool call (with any real file diffs it produced) to
+        the current turn's action log — see send()/_save_session_log()."""
+        self._current_turn_actions.append({
+            "tool": name,
+            "args": _log_safe(args),
+            "result": _log_safe(result),
+            "diffs": [{"path": path, "diff": diff} for path, diff in diffs],
+        })
 
 
 # ── REPL ───────────────────────────────────────────────────────────────────────
@@ -1077,6 +1160,94 @@ def _handle_vision_command(arg: str, session: "AgentSession") -> None:
         console.print(f"[red]⚠ {e}[/red]")
 
 
+# ── /history — browse and view past sessions (prompts, actions, diffs) ─────────
+
+def _list_sessions(workspace: Path) -> list[Path]:
+    """Every saved session file for this workspace, most recent first —
+    session_id's timestamp format sorts correctly as plain filename strings."""
+    from core.config import MEMORY_DIR, project_id
+
+    sessions_dir = MEMORY_DIR / project_id(workspace) / "sessions"
+    if not sessions_dir.is_dir():
+        return []
+    return sorted(sessions_dir.glob("*.json"), reverse=True)
+
+
+def _handle_history_command(arg: str, session: "AgentSession", workspace: Path) -> None:
+    files = _list_sessions(workspace)
+    if not files:
+        console.print("[dim]No saved sessions yet for this workspace.[/dim]")
+        return
+
+    if not arg:
+        _render_session_list(files, session)
+        return
+
+    if not arg.isdigit() or not (1 <= int(arg) <= len(files)):
+        console.print(f"[yellow]Usage: /history [1-{len(files)}][/yellow]")
+        return
+    _render_session_detail(files[int(arg) - 1])
+
+
+def _render_session_list(files: list[Path], session: "AgentSession") -> None:
+    import json
+
+    lines = []
+    for i, path in enumerate(files, 1):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 — skip an unreadable session, don't crash the list
+            continue
+        turns = data.get("turns", [])
+        first_prompt = turns[0]["prompt"] if turns else "(no messages yet)"
+        touched = sorted({
+            d["path"] for t in turns for a in t.get("actions", []) for d in a.get("diffs", [])
+        })
+        marker = " [dim](current)[/dim]" if data.get("session_id") == session.session_id else ""
+        started = data.get("started_at", "")[:16].replace("T", " ")
+        detail = f"{len(turns)} turn(s)"
+        if touched:
+            detail += f" · files: {', '.join(touched)}"
+        lines.append(f"[cyan]{i:>2}.[/cyan] {started}  [bold]{_short(first_prompt, 50)}[/bold]"
+                     f"{marker}\n      [dim]{detail}[/dim]")
+
+    console.print(Panel("\n\n".join(lines), title="[cyan]Past sessions[/cyan]", border_style="cyan"))
+    console.print(f"[dim]Use '/history <n>' (1-{len(files)}) to view one in detail.[/dim]")
+
+
+def _render_session_detail(path: Path) -> None:
+    import json
+
+    from rich.syntax import Syntax
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001 — surface a clean message, not a traceback
+        console.print(f"[red]⚠ Couldn't read that session: {e}[/red]")
+        return
+
+    console.print(Panel.fit(
+        f"[dim]Workspace:[/dim] {data.get('workspace', '')}\n"
+        f"[dim]Started:[/dim]   {data.get('started_at', '')}",
+        title=f"[cyan]Session {data.get('session_id', '')}[/cyan]",
+        border_style="cyan",
+    ))
+    for i, turn in enumerate(data.get("turns", []), 1):
+        console.print(f"\n[bold cyan]── Turn {i} ──[/bold cyan]")
+        console.print(f"[bold green]> {turn['prompt']}[/bold green]")
+        for action in turn.get("actions", []):
+            preview = ", ".join(
+                f"{k}={_short(v, 40)}" for k, v in (action.get("args") or {}).items()
+            )
+            console.print(f"[cyan]→ {action['tool']}[/cyan]([dim]{preview}[/dim])")
+            for d in action.get("diffs", []):
+                console.print(Syntax(d["diff"], "diff", theme="monokai", word_wrap=True))
+        if turn.get("answer"):
+            console.print(f"\n{turn['answer']}")
+        else:
+            console.print("[dim](no answer — interrupted or hit the step limit)[/dim]")
+
+
 # ── /init — analyze the codebase and write/update AICODER.md ───────────────────
 
 _INIT_PROMPT = (
@@ -1383,6 +1554,8 @@ def _handle_command(raw: str, session: "AgentSession", workspace: Path) -> bool:
                 "no path ('/vision what about the corner?') reuse the last image\n"
                 r"[bold]/vision model[/bold] pick the vision-capable model interactively, or "
                 "'/vision model <name>'\n"
+                r"[bold]/history \[n][/bold]  list past sessions for this workspace, or view one "
+                "in detail (prompts, actions, diffs)\n"
                 "[bold]/status[/bold]       show workspace, model, provider, and dev-mode profile\n"
                 "[bold]/context[/bold]      show conversation size vs. the compaction budget\n"
                 "[bold]/compact[/bold]      summarize older turns now (usually automatic)\n"
@@ -1452,6 +1625,8 @@ def _handle_command(raw: str, session: "AgentSession", workspace: Path) -> bool:
         _handle_model_command(arg, session)
     elif name == "vision":
         _handle_vision_command(arg, session)
+    elif name == "history":
+        _handle_history_command(arg, session, workspace)
     elif name == "memory":
         from memory.project import ProjectMemory
 

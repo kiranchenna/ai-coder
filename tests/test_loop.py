@@ -141,10 +141,14 @@ def test_last_turn_complete_true_on_final_answer():
 def test_send_persists_a_transcript_after_the_turn():
     s = _session([[AIMessageChunk(content="Hello!")]])
     s.send("hi")
-    path = s._transcript_path()
+    path = s._session_log_path()
     assert path.exists()
     saved = json.loads(path.read_text())
-    assert len(saved) == 2  # the human message + the AI's final answer
+    assert len(saved["raw_messages"]) == 2  # the human message + the AI's final answer
+    assert len(saved["turns"]) == 1
+    assert saved["turns"][0] == {
+        "prompt": "hi", "actions": [], "answer": "Hello!", "completed": True,
+    }
 
 
 def test_load_transcript_restores_messages_after_a_fresh_system_prompt():
@@ -170,9 +174,12 @@ def test_load_transcript_returns_false_when_nothing_saved():
 
 def test_load_transcript_returns_false_on_corrupted_file():
     s = _session([[AIMessageChunk(content="ignored")]])
-    path = s._transcript_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("not valid json{{{")
+    # A *different* session's file — load_transcript() always excludes this
+    # session's own (freshly created, still-empty) file when picking "the
+    # latest other session" to resume.
+    other = s._sessions_dir() / "2020-01-01T00-00-00-000000.json"
+    other.parent.mkdir(parents=True, exist_ok=True)
+    other.write_text("not valid json{{{")
     assert s.load_transcript() is False
     assert len(s.messages) == 1
 
@@ -183,7 +190,50 @@ def test_transcript_persists_even_when_a_turn_is_interrupted():
     s.llm = _InterruptingLLM(s, chunks, interrupt_after=1)  # fires mid-stream
     out = s.send("hi")
     assert out == ""  # interrupted
-    assert s._transcript_path().exists()  # still saved (best-effort, in a finally)
+    assert s._session_log_path().exists()  # still saved (best-effort, in a finally)
+
+
+def test_send_records_tool_calls_as_actions():
+    s = _session([
+        [_native_tool_call("list_files", {"path": "."})],
+        [AIMessageChunk(content="Done.")],
+    ])
+    s.send("what's in this repo?")
+    assert len(s.session_turns) == 1
+    actions = s.session_turns[0]["actions"]
+    assert len(actions) == 1
+    assert actions[0]["tool"] == "list_files"
+    assert actions[0]["args"] == {"path": "."}
+    assert actions[0]["diffs"] == []  # a read, not a write — no diff produced
+
+
+def test_send_records_a_real_diff_when_a_file_is_written():
+    s = _session([
+        [_native_tool_call("write_file", {"path": "hello.py", "content": "print(1)\n"})],
+        [AIMessageChunk(content="Created it.")],
+    ])
+    s.send("create hello.py")
+
+    actions = s.session_turns[0]["actions"]
+    assert len(actions) == 1
+    assert actions[0]["tool"] == "write_file"
+    [diff_entry] = actions[0]["diffs"]
+    assert diff_entry["path"] == "hello.py"
+    assert "+print(1)" in diff_entry["diff"]
+    assert (s.workspace / "hello.py").read_text() == "print(1)\n"  # really written
+
+
+def test_log_safe_truncates_long_strings_but_keeps_short_ones():
+    from agent.loop import _log_safe
+
+    short = "hello"
+    long = "x" * 1000
+    assert _log_safe(short) == short
+    truncated = _log_safe(long, limit=500)
+    assert truncated.startswith("x" * 500)
+    assert "truncated" in truncated
+    assert _log_safe({"a": long}, limit=500)["a"] == truncated
+    assert _log_safe([long], limit=500)[0] == truncated
 
 
 # ─── request_interrupt() — best-effort mid-turn cancellation (the TUI's Esc) ───
@@ -1238,3 +1288,63 @@ def test_run_agent_repl_continue_with_nothing_saved_starts_fresh(monkeypatch, tm
     monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: "/exit"))
     loop_mod.run_agent_repl(tmp_path, continue_session=True)
     assert "No previous conversation found" in capsys.readouterr().out
+
+
+# ── /history — browse and view past sessions ────────────────────────────────────
+
+def test_history_command_no_sessions_shows_message(tmp_path, capsys):
+    from agent.loop import _handle_history_command
+
+    session = SimpleNamespace(session_id="whatever")
+    _handle_history_command("", session, tmp_path)
+    assert "No saved sessions yet" in capsys.readouterr().out
+
+
+def test_history_command_lists_sessions_with_prompt_and_files_touched(capsys):
+    s = _session([
+        [_native_tool_call("write_file", {"path": "app.py", "content": "x = 1\n"})],
+        [AIMessageChunk(content="Done.")],
+    ])
+    s.send("fix the bug in app.py")
+
+    from agent.loop import _handle_history_command
+    _handle_history_command("", s, s.workspace)
+    out = capsys.readouterr().out
+    assert "fix the bug in app.py" in out
+    assert "1 turn" in out
+    assert "app.py" in out
+    assert "(current)" in out  # the only session, and it's this one
+
+
+def test_history_command_invalid_index_shows_usage(capsys):
+    s = _session([[AIMessageChunk(content="hi")]])
+    s.send("hello")
+
+    from agent.loop import _handle_history_command
+    _handle_history_command("99", s, s.workspace)
+    assert "Usage: /history" in capsys.readouterr().out
+
+
+def test_history_command_detail_view_shows_prompt_actions_diffs_answer(capsys):
+    s = _session([
+        [_native_tool_call("write_file", {"path": "app.py", "content": "x = 1\n"})],
+        [AIMessageChunk(content="Fixed the bug.")],
+    ])
+    s.send("fix the bug in app.py")
+
+    from agent.loop import _handle_history_command
+    _handle_history_command("1", s, s.workspace)
+    out = capsys.readouterr().out
+    assert "fix the bug in app.py" in out
+    assert "write_file" in out
+    assert "+x = 1" in out  # the real diff, rendered
+    assert "Fixed the bug." in out
+
+
+def test_history_command_detail_view_handles_unreadable_file(tmp_path, capsys):
+    from agent.loop import _render_session_detail
+
+    bad = tmp_path / "bad.json"
+    bad.write_text("not valid json{{{")
+    _render_session_detail(bad)
+    assert "Couldn't read that session" in capsys.readouterr().out

@@ -197,6 +197,12 @@ Conversations don't survive quitting `aicoder` by default — pick up where you
 left off with `aicoder --continue` (or `-c`), which resumes the most recent
 conversation for the current workspace instead of starting fresh.
 
+Every session is saved (one file per session, nothing overwritten) so you can
+go back and see what actually happened — `/history` lists past sessions for
+this workspace (date, first prompt, files touched); `/history <n>` shows one
+in full detail: every prompt, every tool call made in answering it, the real
+diff for any file that changed, and the final answer.
+
 **On a real terminal, `aicoder` runs a full-screen chat UI** — a scrolling
 conversation with a pinned input box at the bottom, a "/" autocomplete
 dropdown for slash commands, arrow-key menus (`/model`, confirmations), and a

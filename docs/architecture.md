@@ -231,13 +231,18 @@ quality from a small model".
     `_run_model_picker`, extracted from `_handle_model_command` once a second
     caller needed it) rather than duplicating the grouping/highlighting/
     "Other…" logic a second time.
-12. **Conversations don't persist unless asked** — `aicoder --continue`
-    resumes the last saved conversation for the workspace; the default (no
-    flag) is always a fresh session, matching how the whole test suite (and
-    every other flag) already behaves. Persistence itself is unconditional
-    and best-effort on every `send()` (a `finally` block, so an interrupted
-    or failed turn still saves progress) — the opt-in is in *reading* it
-    back, not in whether it's written.
+12. **Every session is saved, but resuming is opt-in** — one JSON file per
+    session (`sessions/<session_id>.json`), never overwritten across
+    sessions; `aicoder --continue` resumes the most recent one for the
+    workspace, but the default (no flag) is always a fresh session, matching
+    how the whole test suite (and every other flag) already behaves.
+    Persistence itself is unconditional and best-effort on every `send()`
+    (a `finally` block, so an interrupted or failed turn still saves
+    progress) — the opt-in is in *reading* it back, not in whether it's
+    written. The same file backs two different needs without duplicating
+    data: `raw_messages` for `--continue`'s exact restore, `turns` (with
+    real per-action diffs, not just a status string) for `/history`'s
+    human-readable browsing.
 
 ---
 
@@ -292,14 +297,35 @@ checks tool calling (native or text-recovered) for the configured model.
 }
 ```
 
-**Conversation transcript** (`~/.aicoder/memory/<project_id>/conversation.json`,
-for `aicoder --continue`) — everything after the system prompt, via
-LangChain's `messages_to_dict`:
+**Session log** (`~/.aicoder/memory/<project_id>/sessions/<session_id>.json`
+— one file per session, `session_id` a filesystem-safe timestamp, never
+overwritten across sessions): `turns` is the human-analyzable log `/history`
+reads (real diffs, not just "wrote N chars"); `raw_messages` is everything
+after the system prompt via LangChain's `messages_to_dict`, what
+`aicoder --continue` restores:
 ```json
-[
-  {"type": "human", "data": {"content": "fix the login bug", ...}},
-  {"type": "ai", "data": {"content": "Found it — a stale session check.", "tool_calls": [], ...}}
-]
+{
+  "session_id": "2026-07-06T14-30-00-123456",
+  "workspace": "/path/to/project",
+  "started_at": "2026-07-06T14:30:00.123456+00:00",
+  "turns": [
+    {
+      "prompt": "fix the login bug",
+      "actions": [
+        {"tool": "read_file", "args": {"path": "login.py"}, "result": "...", "diffs": []},
+        {"tool": "write_file", "args": {"path": "login.py", "content": "..."},
+         "result": "Updated login.py (512 chars).",
+         "diffs": [{"path": "login.py", "diff": "--- a/login.py\n+++ b/login.py\n..."}]}
+      ],
+      "answer": "Found it — a stale session check.",
+      "completed": true
+    }
+  ],
+  "raw_messages": [
+    {"type": "human", "data": {"content": "fix the login bug", ...}},
+    {"type": "ai", "data": {"content": "Found it — a stale session check.", "tool_calls": [], ...}}
+  ]
+}
 ```
 
 **Developer Mode artifacts** (in the workspace under `docs/dev/`):

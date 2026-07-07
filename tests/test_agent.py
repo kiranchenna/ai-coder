@@ -152,6 +152,72 @@ def test_edit_file_fuzzy_preserves_indentation(tmp_path):
     assert (tmp_path / "m.py").read_text() == "def f():\n    return 2\n"
 
 
+# ─── _apply_write records a real diff for the session log (only on an actual
+# write — never on decline/no-op) ───────────────────────────────────────────
+
+def _isolate_config(monkeypatch, tmp_path):
+    monkeypatch.setattr("core.config.AICODER_HOME", tmp_path / "home")
+    monkeypatch.setattr("core.config.CONFIG_PATH", tmp_path / "home" / "config.yaml")
+    monkeypatch.setattr("core.config._config", None)
+    from core.config import get_config
+    return get_config()
+
+
+def test_apply_write_records_a_diff_on_new_file(tmp_path, monkeypatch):
+    import agent.tools as t
+
+    cfg = _isolate_config(monkeypatch, tmp_path)
+    cfg.raw()["files"]["confirmation"] = "never"
+    monkeypatch.setattr(t, "_pending_diffs", [])
+    tools = {tool.name: tool for tool in t.build_tools(tmp_path)}
+    tools["write_file"].invoke({"path": "new.py", "content": "print(1)\n"})
+    assert len(t._pending_diffs) == 1
+    path, diff = t._pending_diffs[0]
+    assert path == "new.py"
+    assert "+print(1)" in diff
+
+
+def test_apply_write_records_a_diff_on_modified_file(tmp_path, monkeypatch):
+    import agent.tools as t
+
+    cfg = _isolate_config(monkeypatch, tmp_path)
+    cfg.raw()["files"]["confirmation"] = "never"
+    (tmp_path / "m.py").write_text("x = 1\n")
+    monkeypatch.setattr(t, "_pending_diffs", [])
+    tools = {tool.name: tool for tool in t.build_tools(tmp_path)}
+    tools["write_file"].invoke({"path": "m.py", "content": "x = 2\n"})
+    assert len(t._pending_diffs) == 1
+    _path, diff = t._pending_diffs[0]
+    assert "-x = 1" in diff and "+x = 2" in diff
+
+
+def test_apply_write_records_nothing_on_decline(tmp_path, monkeypatch):
+    import agent.tools as t
+    from rich.prompt import Confirm
+
+    cfg = _isolate_config(monkeypatch, tmp_path)
+    cfg.raw()["files"]["confirmation"] = "always"
+    monkeypatch.setattr(Confirm, "ask", staticmethod(lambda *a, **k: False))
+    monkeypatch.setattr(t, "_pending_diffs", [])
+    tools = {tool.name: tool for tool in t.build_tools(tmp_path)}
+    result = tools["write_file"].invoke({"path": "new.py", "content": "print(1)\n"})
+    assert "declined" in result
+    assert t._pending_diffs == []
+
+
+def test_apply_write_records_nothing_on_no_change(tmp_path, monkeypatch):
+    import agent.tools as t
+
+    cfg = _isolate_config(monkeypatch, tmp_path)
+    cfg.raw()["files"]["confirmation"] = "never"
+    (tmp_path / "m.py").write_text("x = 1\n")
+    monkeypatch.setattr(t, "_pending_diffs", [])
+    tools = {tool.name: tool for tool in t.build_tools(tmp_path)}
+    result = tools["write_file"].invoke({"path": "m.py", "content": "x = 1\n"})
+    assert "No changes" in result
+    assert t._pending_diffs == []
+
+
 # ─── Cross-platform shell quoting ─────────────────────────────────────────────
 
 def test_shell_quote_posix(monkeypatch):

@@ -200,21 +200,40 @@ covers anything not listed in either picker.
 
 ---
 
-## Session resume (`aicoder --continue`)
+## Session persistence, resume, and history
 
-A conversation doesn't survive quitting `aicoder` by default — `--continue`
-(or `-c`) resumes the most recently saved one for the current workspace
-instead of starting fresh. `AgentSession._save_transcript()` persists
-everything after the system prompt (via LangChain's own
-`messages_to_dict`/`messages_from_dict`, which round-trips tool calls and
-multimodal content correctly) to
-`~/.aicoder/memory/<project_id>/conversation.json`, in a `finally` block on
-every `send()` call — so a turn that gets interrupted or errors still saves
-its progress, and a save failure (e.g. disk full) never masks whatever the
-turn itself raised. The system prompt itself is **never** persisted or
-restored — it's always rebuilt fresh from live repo state on the next
-launch, since the workspace may have changed since the conversation was
-saved.
+Every session is saved as its own file — nothing gets overwritten across
+different sessions — at
+`~/.aicoder/memory/<project_id>/sessions/<session_id>.json`
+(`session_id` is a filesystem-safe timestamp, also the sort key). Two things
+live in each file, serving two different purposes:
+
+- **`raw_messages`** — everything after the system prompt, via LangChain's
+  own `messages_to_dict`, which round-trips tool calls and multimodal
+  content correctly. This is what `aicoder --continue` (or `-c`) restores:
+  it finds the most recently saved *other* session for the current workspace
+  and appends its messages after a freshly rebuilt system prompt (never
+  persisted/restored itself, since the repo may have changed since).
+- **`turns`** — a human-analyzable log, one entry per user message:
+  `{prompt, actions, answer, completed}`, where each action is
+  `{tool, args, result, diffs}` — `diffs` are **real unified diffs**, not
+  just "wrote N chars": `AgentSession._exec()` drains a small module-level
+  recorder in `agent/tools.py` (`_pending_diffs`, appended to by
+  `_apply_write` only after an actual write — never on a declined or
+  no-op write) right after each tool call, so a diff is correlated with
+  the exact action that produced it, without changing what any tool
+  actually returns to the model.
+
+Both are saved in a `finally` block on every `send()` call — a turn that
+gets interrupted or errors still saves its progress (with `completed: false`
+and whatever partial `actions` happened), and a save failure (e.g. disk
+full) never masks whatever the turn itself raised.
+
+**`/history`** browses this: bare, it lists every saved session for the
+current workspace (date, first prompt, turn count, files touched, with the
+current session marked); `/history <n>` shows one in full detail — every
+prompt, every tool call, the real diff for anything that changed
+(syntax-highlighted, same as `/diff`), and the final answer.
 
 ---
 

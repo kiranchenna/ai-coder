@@ -24,6 +24,13 @@ from tools.shell_tools import run_with_confirmation
 
 console = Console()
 
+# Diffs from actual (applied, not declined/no-op) writes this turn — drained
+# by AgentSession._exec() right after each tool call so the session log (see
+# agent/loop.py) can attach the real diff to that specific action without
+# _apply_write needing a reference to the session, and without changing what
+# any tool actually returns to the model (which stays a terse status string).
+_pending_diffs: list[tuple[str, str]] = []
+
 
 def _shell_quote(s: str) -> str:
     """Quote a string for the active platform's shell (subprocess shell=True)."""
@@ -164,6 +171,8 @@ def _apply_write(workspace: Path, path: str, new_content: str, existing: str | N
         ft.backup_file(workspace, path)
 
     ft.write_file(workspace, path, new_content)
+    if diff.strip():
+        _pending_diffs.append((path, diff))
     verb = "Created" if is_new else "Updated"
     return f"{verb} {path} ({len(new_content)} chars)."
 

@@ -1,6 +1,36 @@
 # Changelog
 
 ## Unreleased
+- **Every session is saved and analyzable — `/history`.** One JSON file per
+  session at `~/.aicoder/memory/<project_id>/sessions/<session_id>.json`,
+  never overwritten across sessions. Two things live in it: `turns` — a
+  human-analyzable log (`{prompt, actions, answer, completed}`, each action
+  `{tool, args, result, diffs}`) — and `raw_messages` (LangChain
+  `messages_to_dict`, everything after the system prompt), which is what
+  `aicoder --continue` now restores from instead of the old single
+  `conversation.json`.
+  - `diffs` are **real unified diffs**, not just "wrote N chars":
+    `_apply_write` (`agent/tools.py`) already computed one for the
+    confirmation UI and discarded it — now records it (only after an actual
+    write, never on a declined or no-op one) into a small module-level list
+    that `AgentSession._exec()` drains right after each tool call, so a diff
+    is correlated with the exact action that produced it without changing
+    what any tool actually returns to the model.
+  - Saving is unconditional and best-effort in a `finally` on every `send()`
+    — an interrupted or failed turn still saves its progress
+    (`completed: false`), and a save failure never masks whatever the turn
+    itself raised.
+  - New `/history` command: bare, lists every saved session for the current
+    workspace (date, first prompt, turn count, files touched, current
+    session marked); `/history <n>` shows one in full detail — every prompt,
+    every tool call, the real diff for anything changed (syntax-highlighted,
+    same as `/diff`), and the final answer.
+  - 12 new tests, verified live end-to-end against the real agent loop and a
+    real Ollama model (a real `write_file` call, a real file change, the
+    exact diff correctly captured in the session log and rendered by
+    `/history`) — including one live run where the model chose to describe
+    an edit instead of actually calling a tool, which the log faithfully
+    reflected (a real small-model behavior nuance, not a logging bug).
 - **Session resume: `aicoder --continue` (or `-c`).** A conversation doesn't
   survive quitting `aicoder` by default; `--continue` resumes the most
   recently saved one for the current workspace instead of starting fresh.
