@@ -29,21 +29,20 @@ def project_id(root: Path) -> str:
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "model": {
-        # provider: "ollama" (default) or "openai_compatible" — any local server
-        # (llama.cpp server, vLLM, LM Studio, text-generation-webui, LocalAI, ...)
-        # or hosted API (OpenAI, OpenRouter, Groq, Together, ...) that speaks the
-        # OpenAI chat-completions protocol. Needs `pip install "ai-coder[openai]"`.
-        # For "ollama": change 'name' to any model you have pulled via
-        # `ollama pull <model>`, or use the in-session `/model` command for an
-        # interactive picker with curated, verified recommendations by tier
-        # (see core/model_catalog.py).
-        # For "openai_compatible": set base_url to your server/API's endpoint
-        # (e.g. http://localhost:8080/v1) and 'name' to the model id it expects.
-        "provider": "ollama",
-        "name": "qwen2.5-coder:7b",
-        "base_url": "http://localhost:11434",
-        # Only used when provider is "openai_compatible". Leave blank for local
-        # servers that don't check it; most hosted APIs require a real key.
+        # provider is always "openai_compatible" — a ChatOpenAI pointed at
+        # base_url, which speaks to LM Studio's default local server out of
+        # the box. It'll talk to any other server/hosted API using the same
+        # OpenAI chat-completions protocol too (a custom local server, vLLM,
+        # OpenAI, OpenRouter, Groq, Together, ...) — just change base_url and
+        # 'name' to that endpoint's model id.
+        # For LM Studio: download a model there, `lms load <id>`, and set
+        # 'name' to that id (see `lms ls`) — or use the in-session `/model`
+        # command for an interactive picker over what's already downloaded.
+        "provider": "openai_compatible",
+        "name": "qwen2.5-coder-7b-instruct",
+        "base_url": "http://localhost:1234/v1",
+        # Leave blank for local servers that don't check it (LM Studio
+        # doesn't); most hosted APIs require a real key.
         "api_key": "",
         "temperature": 0.3,
         "temperature_precise": 0.1,
@@ -90,11 +89,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "knowledge": {
         # Dedicated embedding model for the vector RAG knowledge base.
-        # Uses a separate fast model instead of the main chat model.
-        # `nomic-embed-text` is the canonical Ollama tag (pull it with
-        # `ollama pull nomic-embed-text`): small, fast, and reliably available.
-        # Set to "" to use the main chat model (no extra download needed).
-        "embedding_model": "nomic-embed-text",
+        # Uses a separate fast, small model instead of the main chat model.
+        # "text-embedding-nomic-embed-text-v1.5" is what LM Studio names
+        # nomic-embed-text-v1.5 once downloaded there (`lms get
+        # nomic-embed-text-v1.5`) — small, fast, and a common choice; check
+        # `lms ls` for the exact id if you downloaded a different one.
+        # Set to "" to use the main chat model (no extra download needed,
+        # but a chat model makes a mediocre embedder).
+        "embedding_model": "text-embedding-nomic-embed-text-v1.5",
     },
     "vision": {
         # Model used for the two-model handoff when an image is attached
@@ -102,9 +104,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # looks at the image and describes it in text, then that description
         # is folded into a normal text turn for your regular coding model —
         # vision.model is never persisted as your default driver, only used
-        # for that one call. Set to "" to disable (a clear error instead of a
-        # silent no-op if you then try to attach an image).
-        "model": "qwen2.5vl:7b",
+        # for that one call. "" (default) disables it with a clear error
+        # instead of a silent no-op if you then try to attach an image —
+        # download a vision-capable model in LM Studio and set this (or use
+        # the in-session `/vision model` picker) to enable it.
+        "model": "",
     },
     "mcp": {
         # Optional MCP (Model Context Protocol) servers. Their tools are exposed
@@ -134,7 +138,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # Optional stronger model used ONLY for the infrequent, high-leverage
         # critic steps (best-of judging, consistency, design review) while
         # generation stays on the main local model. "" = use the main model.
-        # e.g. "qwen2.5-coder:14b" or a larger model you've pulled.
+        # e.g. "qwen2.5-coder-14b-instruct" or a larger model you've downloaded.
         # `best_of` is gated on this: with no judge_model it is skipped, since a
         # same-strength self-judge added latency without quality in testing.
         "judge_model": "",
@@ -177,12 +181,15 @@ class Config:
 
     @property
     def model_provider(self) -> str:
-        """"ollama" (default) or "openai_compatible" — see DEFAULT_CONFIG."""
-        return (self._data["model"].get("provider") or "ollama").strip().lower()
+        """Always "openai_compatible" — see DEFAULT_CONFIG. Kept as an
+        explicit field (rather than removed outright) since the chat-model
+        factory is still provider-typed under the hood (core/model.py)."""
+        return (self._data["model"].get("provider") or "openai_compatible").strip().lower()
 
     @property
     def model_api_key(self) -> str:
-        """API key for the openai_compatible provider. Unused by ollama."""
+        """API key for the model server. Leave blank for local servers
+        (LM Studio doesn't check it); most hosted APIs require a real key."""
         return self._data["model"].get("api_key", "") or ""
 
     @property

@@ -9,7 +9,7 @@ mangle good code.
     python -m evals.run_build_review_eval
     python -m evals.run_build_review_eval --repeat 3
 
-Needs Ollama running. Reports a fix-rate over the planted-issue cases and a
+Needs the configured model server running. Reports a fix-rate over the planted-issue cases and a
 preservation-rate over the clean ones.
 """
 

@@ -15,14 +15,14 @@ import sys
 from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from rich.console import Console
+from core.console import SafeConsole
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.rule import Rule
 
 from devmode.phases import PHASES, PHASES_BY_ID, PhaseSpec
 
-console = Console()
+console = SafeConsole()
 
 _STATUS_ICON = {"done": "✅", "skipped": "⏭", "in_progress": "🔄", "pending": "○"}
 
@@ -136,10 +136,11 @@ class DevSession:
 
         Earlier phases are summarized to their cached digests (commitments and
         constraints) rather than concatenated in full. Chaining ~14 raw artifacts
-        would blow past ``num_ctx`` by the later phases, and Ollama truncates from
-        the *front* — silently evicting the earliest, most foundational decisions
-        (requirements, security). Digests keep every prior phase represented within
-        a bounded budget. The digests are already computed (and cached in state) by
+        would blow past the model's context length by the later phases, and local
+        servers typically truncate from the *front* — silently evicting the
+        earliest, most foundational decisions (requirements, security). Digests
+        keep every prior phase represented within a bounded budget. The digests
+        are already computed (and cached in state) by
         the per-phase consistency check, so this is usually free.
         """
         pairs: list[tuple[str, str]] = []

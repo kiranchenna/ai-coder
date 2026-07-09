@@ -2,7 +2,7 @@
 
 **Version:** 3.0.0 | **Language:** Python 3.11+ | **Entry point:** `cli.py` → `aicoder` CLI command
 
-AICoder v3 is a local, offline **agentic** coding assistant. It uses Ollama
+AICoder v3 is a local, offline **agentic** coding assistant. It uses LM Studio
 (local LLM, no cloud, no API keys) to drive a single tool-calling loop that
 works on your real repository: reading and editing code, running commands and
 tests, researching the web, and remembering decisions across sessions.
@@ -20,9 +20,7 @@ ai-coder/
 │   ├── config.py               # Configuration (~/.aicoder/config.yaml)
 │   ├── context.py              # Workspace scanner / repo overview
 │   ├── code_index.py           # ctags-style symbol index (find_symbol)
-│   ├── model.py                # ChatOllama factory + tool-call recovery + selftest
-│   ├── model_catalog.py        # Curated /model recommendations by tier (fast/balanced/powerful)
-│   ├── ollama_install.py       # Detect + offer to install Ollama itself (cli.py's pre-flight check)
+│   ├── model.py                # OpenAI-compatible chat model factory + LM Studio discovery + tool-call recovery + selftest
 │   └── project.py              # Test- & lint-command detection
 │
 ├── agent/                      # The agentic core
@@ -75,7 +73,7 @@ not in the repo.
 
 | Category | Library | Floor |
 |---|---|---|
-| LLM | langchain-ollama | 1.0+ |
+| LLM | langchain-openai | 1.0+ |
 | LLM core | langchain-core | 1.0+ |
 | Terminal rendering | rich | 13.0+ |
 | Full-screen chat UI | textual | 8.0+ |
@@ -90,7 +88,7 @@ not in the repo.
 | Word parsing | python-docx | 1.1+ |
 | File patterns | pathspec | 0.12+ |
 | Testing | pytest | 8.0+ |
-| External | Ollama (local LLM server) | — |
+| External | LM Studio (local LLM server) | — |
 
 ---
 
@@ -119,19 +117,22 @@ Tools touch the workspace (read/write code, run shell/tests) and `~/.aicoder/`
 ## Configuration
 
 - File: `~/.aicoder/config.yaml` (auto-created on first run)
-- Default model: `qwen2.5-coder:7b` via Ollama at `http://localhost:11434`
-- `model.provider` also accepts `openai_compatible` — any local server (llama.cpp
-  server, vLLM, LM Studio, ...) or hosted API that speaks the OpenAI
-  chat-completions protocol, sized to the user's own hardware/preference. See
-  `core/model.py`'s `get_chat_model()`/`_build_openai_compatible()` for the
-  branch, and the README's "Using a different backend" for setup.
+- Default model: `qwen2.5-coder-7b-instruct` via LM Studio at `http://localhost:1234/v1`
+- `model.provider` is always `openai_compatible` under the hood — kept as an
+  explicit field since the chat-model factory is still provider-typed. Any
+  local server (llama.cpp server, vLLM, LM Studio, ...) or hosted API that
+  speaks the OpenAI chat-completions protocol works by pointing `base_url`
+  elsewhere; the rich `/model` picker (list/switch downloaded models) is
+  LM-Studio-specific, detected by `base_url` matching its default. See
+  `core/model.py`'s `get_chat_model()`/`_build_openai_compatible()`, and the
+  README's "Using a different backend" for setup.
 
 ```yaml
 model:
-  provider: ollama                # ollama | openai_compatible
-  name: qwen2.5-coder:7b
-  base_url: http://localhost:11434
-  api_key: ""                     # openai_compatible only
+  provider: openai_compatible     # always openai_compatible; kept as an explicit field
+  name: qwen2.5-coder-7b-instruct
+  base_url: http://localhost:1234/v1   # LM Studio's default
+  api_key: ""                     # blank for local servers with no auth
   temperature: 0.3
   temperature_precise: 0.1
   context_length: 16384
@@ -144,12 +145,14 @@ files:
   backup: true
 
 knowledge:
-  embedding_model: "nomic-embed-text"
+  embedding_model: "text-embedding-nomic-embed-text-v1.5"
 
 vision:
-  model: qwen2.5vl:7b            # used only when an image is attached (Ctrl+V
-                                  # paste in the TUI, or /vision <path>) — the
-                                  # two-model handoff; "" disables it
+  model: ""                      # "" disables vision by default — download a
+                                  # vision model in LM Studio and set this (or
+                                  # use /vision model) to enable the two-model
+                                  # handoff (Ctrl+V paste in the TUI, or
+                                  # /vision <path>)
 
 devmode:                       # Developer Mode quality levers (one dial)
   profile: balanced            # fast | balanced | thorough
@@ -191,21 +194,20 @@ quality from a small model".
    traversal is rejected.
 6. **Resumable plans** — `/plan <goal>` saves task state after each step so a build
    resumes after a quit.
-7. **Local by default, not local by force** — Ollama (no cloud, no API keys) is
-   the default and needs no setup beyond it. `model.provider: openai_compatible`
-   is an explicit opt-in for a different local runtime sized to the user's own
-   hardware (vLLM, llama.cpp server, LM Studio, ...) or a hosted API with the
-   user's own key — never on unless configured. RAG/embeddings stay on Ollama
-   regardless of `model.provider`. All data still lives under `~/.aicoder/`.
+7. **Local by default, not local by force** — LM Studio (no cloud, no API keys) is
+   the default and needs no setup beyond it. Pointing `base_url` at a different
+   local runtime (vLLM, llama.cpp server, ...) or a hosted API with the user's
+   own key works the same way, since the underlying protocol is always OpenAI
+   chat-completions — but only the rich `/model`/`/vision model` pickers are
+   LM-Studio-specific. All data still lives under `~/.aicoder/`.
 8. **Evidence-based quality levers** — the Developer Mode levers are validated by
    a local eval harness (`evals/`), not assumed. The default `balanced` profile
    carries only the levers that measurably earned their latency; `best_of` is
    gated behind a stronger `judge_model` because the ablation showed it doesn't
    pay with a same-strength self-judge.
-9. **Optional extras stay optional** — `langchain-openai` (for `openai_compatible`)
-   and `mcp` are lazy-imported only when their feature is actually configured, so
-   a plain-Ollama install never pulls them in; a missing package gives a clean,
-   actionable error rather than a traceback.
+9. **Optional extras stay optional** — `mcp` is lazy-imported only when a server
+   is actually configured; a missing package gives a clean, actionable error
+   rather than a traceback.
 10. **Full-screen, trace-free terminal session** — a real terminal gets
     `agent/tui.py`, a Textual chat UI in the alternate screen buffer (the same
     mechanism vim/htop/Claude Code use), restoring the terminal exactly as
@@ -217,20 +219,20 @@ quality from a small model".
     technique this project's own tests already use) so all of that existing,
     already-tested business logic runs unchanged inside it.
 11. **Vision as a two-model handoff, not a unified capability** — unlike a
-    single multimodal model (e.g. Claude's), Ollama's local ecosystem splits
-    vision and coding into separate model families, and the curated coding
-    catalog is text-only. So an attached image (Ctrl+V paste, or
+    single multimodal model (e.g. Claude's), LM Studio's local model ecosystem
+    splits vision and coding into separate model families; the typical coding
+    models are text-only. So an attached image (Ctrl+V paste, or
     `/vision <path>`) is described in text by a separate vision model
     (`vision.model`, built fresh, never persisted as the default driver, never
-    bound to the coding tools) before the regular coding model ever sees the
-    turn — the rest of the agentic loop is unaware anything visual was
-    involved at all. Because it's a genuinely separate model family (not a
-    "supports vision" flag on the coding catalog), `/vision model` gets its
-    own picker sourced from a distinct `VISION_MODELS` catalog — but reuses
-    `/model`'s picker machinery outright (`_build_model_menu`/
-    `_run_model_picker`, extracted from `_handle_model_command` once a second
-    caller needed it) rather than duplicating the grouping/highlighting/
-    "Other…" logic a second time.
+    bound to the coding tools, disabled by default until one is downloaded and
+    configured) before the regular coding model ever sees the turn — the rest
+    of the agentic loop is unaware anything visual was involved at all.
+    Because it's a genuinely separate model family, `/vision model` gets its
+    own picker (filtered to vision-capable downloaded models via `lms ls`'s
+    `vision` flag) but reuses `/model`'s picker machinery outright
+    (`_build_model_menu`/`_run_model_picker`, extracted from
+    `_handle_model_command` once a second caller needed it) rather than
+    duplicating the grouping/highlighting/"Other…" logic a second time.
 12. **Every session is saved, but resuming is opt-in** — one JSON file per
     session (`sessions/<session_id>.json`), never overwritten across
     sessions; `aicoder --continue` resumes the most recent one for the
@@ -260,8 +262,8 @@ live code paths (`python -m evals.<name>`):
 | `run_build_review_eval` | `build_review` | placeholder-removal on drafts with planted issues | 100% fix rate, 100% preservation |
 
 Scoring logic (`parse_score`, `compute_metrics`, `judge_case`) is pure and
-unit-tested with the model call injectable, so the suite runs without Ollama.
-See [`evals/README.md`](../evals/README.md). Caveat: numbers are small-n with a
+unit-tested with the model call injectable, so the suite runs without a live
+model server. See [`evals/README.md`](../evals/README.md). Caveat: numbers are small-n with a
 same-model judge — deltas are decisive, absolute figures want a stronger
 `--judge-model` and higher `--repeat`.
 
@@ -270,9 +272,10 @@ same-model judge — deltas are decisive, absolute figures want a stronger
 ## LLM integration
 
 Uses LangChain message types (`HumanMessage`, `AIMessage`, `SystemMessage`,
-`ToolMessage`). `core/model.get_chat_model()` builds a `ChatOllama` (conversational
-`temperature=0.3`, precise `0.1`) and binds the agent's tools. `core/model.selftest()`
-checks tool calling (native or text-recovered) for the configured model.
+`ToolMessage`). `core/model.get_chat_model()` builds a `ChatOpenAI` pointed at
+the configured `base_url` (conversational `temperature=0.3`, precise `0.1`)
+and binds the agent's tools. `core/model.selftest()` checks tool calling
+(native or text-recovered) for the configured model.
 
 ---
 
@@ -357,7 +360,7 @@ pip install -e .
 aicoder --selftest            # check tool calling
 aicoder                       # start the agent
 
-# models
-ollama pull qwen2.5-coder:7b   # the agent driver
-ollama pull nomic-embed-text   # embeddings (web research + documents)
+# models — download in LM Studio's own model search
+# lmstudio-community/Qwen2.5-Coder-7B-Instruct-GGUF   # the agent driver
+# nomic-ai/nomic-embed-text-v1.5-GGUF                 # embeddings (web research + documents)
 ```

@@ -10,13 +10,13 @@ Practical help for running AICoder. For *how it works* see
 
 If anything misbehaves, confirm these first — most issues are one of them:
 
-1. **Ollama is installed and running** — if it's not installed at all, `aicoder`
-   detects that on launch and offers to install it for you; otherwise
-   `ollama serve` (or the desktop app). Check: `curl http://localhost:11434/api/tags`.
-2. **The chat model is pulled** — `ollama pull qwen2.5-coder:7b`, or use the
-   in-session `/model` picker.
-3. **The embedding model is pulled** (only for web research / documents) —
-   `ollama pull nomic-embed-text`.
+1. **LM Studio is installed with its local server running** — Developer tab →
+   Start Server. Check: `curl http://localhost:1234/v1/models`.
+2. **The chat model is downloaded and loaded** — `lms load <model-id>` (or
+   from LM Studio's UI), or use the in-session `/model` picker.
+3. **The embedding model is downloaded** (only for web research / documents)
+   — grab it in LM Studio's own model search, e.g.
+   `nomic-ai/nomic-embed-text-v1.5-GGUF`.
 4. **Tool calling works on your model** — `aicoder --selftest`.
 5. **You're in the right project** — `aicoder` runs in the current directory;
    use `aicoder --workspace ./path` to point elsewhere.
@@ -29,18 +29,15 @@ See your active settings any time with `aicoder --config`.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| **"Ollama isn't installed"** | never installed | say yes to the install prompt, or run the shown command yourself, or grab it from [ollama.com/download](https://ollama.com/download) |
-| **"Cannot reach Ollama server"** | installed but not running | `ollama serve` (or open the app); confirm `base_url` in `aicoder --config` |
-| **"Model '…' may not be pulled"** | model not downloaded | `ollama pull <model>` |
-| **`--selftest` says the model can't call tools** | weak/unsupported model | switch to `qwen2.5-coder:7b` or larger (`aicoder --model <name>`) |
-| **Web research / `read_document` "couldn't ingest"** | embedding model missing | `ollama pull nomic-embed-text`; RAG warns once at search time if it fails |
+| **"Couldn't reach LM Studio"** | server not running, or model not loaded | start it (Developer tab → Start Server), `lms load <model-id>`; confirm `base_url` in `aicoder --config` |
+| **`--selftest` says the model can't call tools** | weak/unsupported model | switch to `qwen2.5-coder-7b-instruct` or larger (`aicoder --model <name>`) |
+| **Web research / `read_document` "couldn't ingest"** | embedding model missing | download one in LM Studio and set `knowledge.embedding_model`; RAG warns once at search time if it fails |
 | **`rag_search` returns nothing** | empty/irrelevant cache, or relevance cutoff | research the topic first (`/knowledge learn <topic>`); the cutoff drops unrelated chunks by design |
 | **Edits get declined / the agent loops** | small model struggling | rephrase the task, narrow it, or switch to a larger model |
 | **"Reached the step limit for this turn"** | task needed >12 tool steps | ask it to continue, or break the task up with `/plan <goal>` |
 | **`/init` stops after narrating what it'll do next, without doing it** | small model narrated instead of calling the tool | just say "continue" — it's a normal conversational session, not a special mode; a larger model tends to follow through more reliably |
 | **MCP servers don't load** | extra not installed / bad config | `pip install "ai-coder[mcp]"`; check the server `command`/`args` |
-| **"model.provider is 'openai_compatible' but... isn't installed"** | extra not installed | `pip install "ai-coder[openai]"` |
-| **Using a non-Ollama provider, but RAG/research fails** | embeddings still require Ollama | RAG's embedding model always goes through Ollama, even with `model.provider: openai_compatible` — install/run Ollama for that, or skip RAG features |
+| **"langchain-openai isn't installed"** | broken environment | `pip install langchain-openai` (it's a core dependency, so this should already be present) |
 | **Generated project won't run after `/dev build`** | the verify→fix loop hit its 3-round cap | read the printed failure, fix manually, or re-run `/dev build` / `/dev revisit <phase>` |
 | **Design feels generic / too slow** | wrong `devmode.profile` | speed: set `profile: fast`; depth: `thorough` (+ a `judge_model`) |
 
@@ -49,32 +46,33 @@ See your active settings any time with `aicoder --config`.
 ## Frequently asked questions
 
 **Is my code sent anywhere?**
-No. Inference and embeddings run locally via Ollama; all data lives under
+No. Inference and embeddings run locally via LM Studio; all data lives under
 `~/.aicoder/`. The only outbound traffic is when *you* invoke web research
 (`research` / `fetch_url` / `/knowledge learn`), which queries DuckDuckGo and
 fetches the pages you asked for. Nothing else leaves your machine.
 
 **Which model should I use?**
-`qwen2.5-coder:7b` is the default and the sweet spot for ~16 GB RAM. Smaller
-(`qwen2.5-coder:3b`) is faster but weaker at multi-step work; larger
-(`qwen2.5-coder:14b`, `qwen3-coder:30b`) is stronger and needs more memory. The
+`qwen2.5-coder-7b-instruct` is the default and the sweet spot for ~16 GB RAM.
+Smaller (Qwen2.5-Coder-3B) is faster but weaker at multi-step work; larger
+(Qwen2.5-Coder-14B, Qwen3-Coder-30B) is stronger and needs more memory. The
 model and its context share memory, so a bigger context window costs RAM too.
-Switch anytime with `/model` — type it alone for an interactive picker: your
-pulled models plus curated picks you haven't pulled yet, grouped by tier with a
-one-line reason each. Pick a not-yet-pulled one and it downloads (with
-confirmation) and switches in one step; either way, the choice is saved as your
-default going forward.
+On Apple Silicon, prefer an MLX build over GGUF where available — measurably
+faster for the same model/quant. Switch anytime with `/model` — type it alone
+for an interactive picker listing every model already downloaded in LM Studio
+(current one marked); grabbing a new model is a manual step in LM Studio
+itself. Either way, the choice is saved as your default going forward.
 
-**What if I don't want to use Ollama at all?**
-Set `model.provider: openai_compatible` in `config.yaml` to point at a
-different local server sized to your own hardware (vLLM for a heavy GPU,
-llama.cpp server or LM Studio for something lighter, text-generation-webui,
-LocalAI, ...) or a hosted API with your own key (OpenAI, OpenRouter, Groq,
-Together, ...) — anything that speaks the OpenAI chat-completions protocol.
-Needs `pip install "ai-coder[openai]"`. The rich `/model` picker and the
-startup Ollama checks are specific to Ollama's own APIs, so they're skipped
-for other providers; you'll see your current model/endpoint instead. RAG's
-embedding model still requires Ollama regardless of this setting.
+**What if I want to use a different server than LM Studio?**
+Set `model.base_url` in `config.yaml` to point at a different local server
+sized to your own hardware (vLLM for a heavy GPU, llama.cpp server for
+something lighter, text-generation-webui, LocalAI, ...) or a hosted API with
+your own key (OpenAI, OpenRouter, Groq, Together, ...) — anything that speaks
+the OpenAI chat-completions protocol, which is what AICoder always talks
+under the hood (`model.provider: openai_compatible`). The rich `/model`
+picker and the `lms`-based load/unload behavior are specific to LM Studio's
+own APIs (detected by `base_url` matching its default), so they're skipped
+for other endpoints; you'll see your current model/endpoint instead, and
+`/model <name>` still switches the model id.
 
 **How good is it, really?**
 It's a strong *supervised* assistant, not an autonomous senior engineer. A local
@@ -160,7 +158,7 @@ configure — only add ones you trust.
 When opening an issue, include:
 
 1. `aicoder --version` and `aicoder --config` (redact anything private).
-2. Your OS, Ollama version (`ollama --version`), and the model in use.
+2. Your OS, LM Studio version, and the model in use.
 3. The exact command/prompt and the full error or unexpected output.
 4. Whether `aicoder --selftest` passes.
 

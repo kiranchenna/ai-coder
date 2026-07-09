@@ -73,9 +73,9 @@ def test_status_shows_workspace_model_and_profile(tmp_path, monkeypatch, capsys)
     _isolate_config(monkeypatch, tmp_path)
     _handle_status_command(_session(), tmp_path)
     out = capsys.readouterr().out
-    assert "qwen2.5-coder:7b" in out
+    assert "qwen2.5-coder-7b-instruct" in out
     assert "balanced" in out
-    assert "ollama" in out
+    assert "openai_compatible" in out
 
 
 # ── /context ─────────────────────────────────────────────────────────────────

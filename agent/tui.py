@@ -24,9 +24,9 @@ every `console.print(...)` call site across the codebase, every
 - `_patch_prompts` swaps `rich.prompt.Confirm.ask` / `Prompt.ask` themselves
   (the same monkeypatch technique the test suite already uses, just applied at
   runtime) to route through a Textual modal, so shell/file confirmations, the
-  Ollama install offer, the devmode discuss loop's done/skip/revise/pause, and
-  every other confirmation/prompt across the app becomes TUI-native with zero
-  changes to any of those call sites.
+  devmode discuss loop's done/skip/revise/pause, and every other
+  confirmation/prompt across the app becomes TUI-native with zero changes to
+  any of those call sites.
 
 Blocking business logic (`AgentSession.send`, `DevSession.run`, ...) runs in a
 Textual worker thread so the UI stays responsive; results are written back to
@@ -40,6 +40,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
+from rich.errors import MarkupError
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
@@ -85,6 +86,24 @@ AICODER_THEME = Theme(
 )
 
 
+def _safe_markup_text(content: str) -> Text:
+    """Parse Rich markup in `content`, falling back to literal (unparsed)
+    text if it contains something that *looks* like a markup tag but isn't
+    valid (e.g. a code snippet with `[...]`/`<...>` that reads as a
+    mismatched closing tag) — confirmed live: a model's own generated code
+    triggered exactly this, and crashed the app because the direct
+    `rich_log.write(f"...{e}...")` error-reporting path embedded the
+    original bad content in the message and re-parsed *that* as markup too,
+    cascading into a second, uncaught crash. A malformed tag must never
+    crash the app, and *especially* never crash error-reporting itself —
+    every string handed to RichLog.write() in this module goes through this
+    first, rather than relying on RichLog's own markup=True auto-parsing."""
+    try:
+        return Text.from_markup(content)
+    except MarkupError:
+        return Text(content)
+
+
 class RichLogConsole:
     """A `console.print(...)`-compatible adapter that writes into a Textual
     `RichLog` instead of stdout. Matches the actual call surface used
@@ -104,7 +123,7 @@ class RichLogConsole:
             return
         if isinstance(content, str):
             text = content.rstrip("\n") if end == "" else content
-            self.rich_log.write(text if markup else Text(text))
+            self.rich_log.write(_safe_markup_text(text) if markup else Text(text))
         else:
             self.rich_log.write(content)
 
@@ -140,10 +159,10 @@ def _patch_consoles(new_console: RichLogConsole) -> Callable[[], None]:
 
 # ── Confirm/Prompt modals — the TUI-native equivalent of rich.prompt ────────────
 # Every existing Confirm.ask("...", default=...)/Prompt.ask("...") call site
-# across the codebase (shell/file confirmations, the Ollama install offer, the
-# devmode discuss loop, the /model picker's numbered choice, ...) always uses
-# one of these two shapes — verified by grepping every call site — so these
-# two modals cover the whole app without touching any of those call sites.
+# across the codebase (shell/file confirmations, the devmode discuss loop,
+# the /model picker's numbered choice, ...) always uses one of these two
+# shapes — verified by grepping every call site — so these two modals cover
+# the whole app without touching any of those call sites.
 
 class ConfirmModal(ModalScreen[bool]):
     """A yes/no modal — dismiss(True/False). Enter confirms the default,
@@ -651,7 +670,7 @@ class AICoderApp(App):
         except RuntimeError as e:
             # A misconfigured/missing provider package — show it and stop;
             # there is no usable session to run.
-            rich_log.write(f"[red]⚠ {e}[/red]")
+            rich_log.write(_safe_markup_text(f"[red]⚠ {e}[/red]"))
             self.query_one("#prompt", Input).disabled = True
             return
 
@@ -659,8 +678,10 @@ class AICoderApp(App):
 
         if self.continue_session:
             if self.session.load_transcript():
-                rich_log.write(f"[dim]↺ Resumed the previous conversation "
-                               f"({len(self.session.messages) - 1} message(s)).[/dim]")
+                rich_log.write(_safe_markup_text(
+                    f"[dim]↺ Resumed the previous conversation "
+                    f"({len(self.session.messages) - 1} message(s)).[/dim]"
+                ))
             else:
                 rich_log.write("[dim]No previous conversation found for this workspace — "
                                "starting fresh.[/dim]")
@@ -715,40 +736,67 @@ class AICoderApp(App):
             return
         rich_log = self.query_one("#chat", RichLog)
 
+        # Escape the user's own text before embedding it in a markup string —
+        # confirmed live: a message like "check the [broken markup] here"
+        # gets a bracketed chunk silently swallowed (a syntactically valid,
+        # if meaningless, markup tag doesn't raise — _safe_markup_text's
+        # fallback only catches actual parse errors) unless escaped first.
+        from rich.markup import escape
+
+        echo_user = escape(user)
+
         # A slash command always takes priority and never consumes pending
         # images (e.g. an accidental stray "/" shouldn't drop an attachment
         # the user is still about to send with their next real message).
         if user.startswith("/"):
-            rich_log.write(f"[bold green]{self.workspace.name}>[/bold green] {user}")
+            rich_log.write(_safe_markup_text(f"[bold green]{self.workspace.name}>[/bold green] {echo_user}"))
             self.process_input(user, None)
             return
 
         images, self.pending_images = self.pending_images, []
-        label = f"[bold green]{self.workspace.name}>[/bold green] {user}"
+        label = f"[bold green]{self.workspace.name}>[/bold green] {echo_user}"
         if images:
             label += "  " + " ".join(f"[dim]📎{p.name}[/dim]" for p in images)
-        rich_log.write(label)
+        rich_log.write(_safe_markup_text(label))
         self.process_input(user, images or None)
 
     @work(thread=True, exclusive=True)
     def process_input(self, user: str, images: list[Path] | None = None) -> None:
+        import time
+
         from agent.loop import _handle_command
 
         rich_log = self.query_one("#chat", RichLog)
+        start = time.monotonic()
+        should_exit = False
         try:
             if user.startswith("/"):
-                if _handle_command(user, self.session, self.workspace):
-                    self.call_from_thread(self.exit)
+                should_exit = _handle_command(user, self.session, self.workspace)
                 return
             if images:
                 self.session.send_with_images(user, images)
             else:
                 self.session.send(user)
         except Exception as e:  # noqa: BLE001 — keep the app alive on any failure
-            self.call_from_thread(
-                rich_log.write, f"[red]⚠ Error: {e}[/red]\n"
-                "[dim]If the model is unreachable, check that Ollama is running.[/dim]"
+            # _safe_markup_text, not a raw f-string: `e` can be (and, live,
+            # has been) an error message that itself contains something that
+            # looks like a malformed markup tag — e.g. a MarkupError quoting
+            # the bad tag verbatim. Passing that straight to a markup=True
+            # RichLog.write would parse it *again* and crash a second time,
+            # right inside the handler meant to report the first crash.
+            message = _safe_markup_text(
+                f"[red]⚠ Error: {e}[/red]\n"
+                "[dim]If the model is unreachable, check that LM Studio's local server is "
+                "running (Developer tab → Start Server).[/dim]"
             )
+            self.call_from_thread(rich_log.write, message)
+        finally:
+            # finally, not after the try block — must still run (and time) a
+            # slash command that returns early above, or one that crashed.
+            elapsed = time.monotonic() - start
+            self.call_from_thread(rich_log.write, _safe_markup_text(f"[dim]⏱ {elapsed:.1f}s[/dim]"))
+            if should_exit:
+                self.call_from_thread(self.exit)
 
 
 def run(workspace: Path, continue_session: bool = False) -> None:

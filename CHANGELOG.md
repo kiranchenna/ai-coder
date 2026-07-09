@@ -1,6 +1,43 @@
 # Changelog
 
 ## Unreleased
+- **Ollama removed — LM Studio is now the only supported backend.** A prior
+  release added full dual-provider support (Ollama + LM Studio, switchable
+  with `/provider`); this release rips Ollama back out entirely per a
+  deliberate scope decision to keep the project single-backend for now.
+  - Deleted `core/ollama_install.py` (install-offer flow), `core/model_catalog.py`
+    (curated Ollama-tag recommendation lists), the `/provider` command, and
+    every Ollama-specific discovery/pull code path in `core/model.py` and
+    `agent/loop.py` (`list_ollama_models`, `is_model_pulled`, the pull-with-
+    confirmation flow, the provider-preset picker).
+  - `core/config.py`'s defaults now point at LM Studio out of the box:
+    `model.provider: openai_compatible`, `model.name:
+    qwen2.5-coder-7b-instruct`, `model.base_url: http://localhost:1234/v1`,
+    `knowledge.embedding_model: text-embedding-nomic-embed-text-v1.5`.
+    `vision.model` now defaults to `""` (disabled) since there's no longer a
+    curated vision-model catalog to pick a default from.
+  - The `model.provider` config key is kept (always `openai_compatible` now)
+    rather than hardcoded away, since the chat-model factory is still
+    provider-typed under the hood and this keeps `base_url`-only backend
+    swaps (a different local server, or a hosted API) working with zero code
+    changes — `/model`/`/vision model`'s rich LM Studio pickers are gated on
+    `base_url` matching LM Studio's default, falling back to a generic
+    model/endpoint display otherwise.
+  - `pyproject.toml`: `langchain-ollama` → `langchain-openai` as a core
+    dependency (previously an opt-in `[openai]` extra); the extra is gone.
+  - Full doc pass (README, `docs/architecture.md`, `docs/features.md`,
+    `docs/support.md`, `docs/index.md`, `CONTRIBUTING.md`,
+    `evals/README.md`) to match — install/setup instructions now describe
+    downloading models in LM Studio and `lms load`/`lms ls` instead of
+    `ollama pull`/`ollama serve`. `evals/benchmark_backends.py` (the
+    Ollama-vs-LM-Studio throughput comparison script) is intentionally left
+    as-is — it's a standalone historical comparison tool, not part of the
+    app's runtime path.
+  - 390 tests passing after the removal; test isolation note for future work
+    on this codebase: `_isolate_config()`-based tests must set a non-LM-Studio
+    `base_url` (or explicitly mock `list_lmstudio_models`/
+    `switch_lmstudio_model`/`is_lmstudio_model_downloaded`) since
+    `DEFAULT_CONFIG` now points at LM Studio's real default endpoint.
 - **Every session is saved and analyzable — `/history`.** One JSON file per
   session at `~/.aicoder/memory/<project_id>/sessions/<session_id>.json`,
   never overwritten across sessions. Two things live in it: `turns` — a

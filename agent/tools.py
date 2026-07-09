@@ -16,13 +16,13 @@ import sys
 from pathlib import Path
 
 from langchain_core.tools import tool
-from rich.console import Console
 from rich.prompt import Confirm
 
 import tools.file_tools as ft
+from core.console import SafeConsole
 from tools.shell_tools import run_with_confirmation
 
-console = Console()
+console = SafeConsole()
 
 # Diffs from actual (applied, not declined/no-op) writes this turn — drained
 # by AgentSession._exec() right after each tool call so the session log (see
@@ -564,12 +564,12 @@ def build_tools(workspace: Path) -> list:
                 ttl_hours=24 * 365, project=proj,
             )
         except Exception as e:
-            # Don't claim success: ingestion failed (e.g. Ollama/embedding model
-            # unavailable). Return the text but make the failure explicit.
+            # Don't claim success: ingestion failed (e.g. LM Studio/embedding
+            # model unavailable). Return the text but make the failure explicit.
             note = (
                 f"[WARNING: could not ingest '{path}' into the knowledge base "
                 f"({e}); it will NOT be searchable via rag_search. Is the embedding "
-                f"model pulled and Ollama running?]\n\n"
+                f"model downloaded and LM Studio's server running?]\n\n"
             )
             return note + (text[:MAX_READ_CHARS] if len(text) > MAX_READ_CHARS else text)
 

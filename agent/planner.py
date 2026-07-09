@@ -16,7 +16,7 @@ import json
 from pathlib import Path
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from rich.console import Console
+from core.console import SafeConsole
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.rule import Rule
@@ -24,7 +24,7 @@ from rich.rule import Rule
 from core.config import MEMORY_DIR, project_id
 from core.model import balanced_json_arrays, get_chat_model
 
-console = Console()
+console = SafeConsole()
 
 PLANNER_SYSTEM = (
     "You are a senior engineer planning the work to accomplish a goal in a software "

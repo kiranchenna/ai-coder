@@ -4,7 +4,7 @@
 
 <h1 align="center">AICoder ✨</h1>
 
-> A local, offline **agentic coding assistant** — it plans, reads and edits real code, runs commands and tests, researches the web, and remembers your project — all running on your own machine via [Ollama](https://ollama.com/) by default. No API keys required, nothing sent anywhere unless you invoke web research or explicitly opt into a different backend (see [Using a different backend](#using-a-different-backend-not-ollama)).
+> A local, offline **agentic coding assistant** — it plans, reads and edits real code, runs commands and tests, researches the web, and remembers your project — all running on your own machine via [LM Studio](https://lmstudio.ai/) by default. No API keys required, nothing sent anywhere unless you invoke web research or explicitly point it at a different server/API (see [Using a different backend](#using-a-different-backend)).
 
 ---
 
@@ -93,8 +93,8 @@ your message
 ## Requirements
 
 - **Python 3.11+**
-- **[Ollama](https://ollama.com/)** installed and running locally — if it isn't installed, `aicoder` detects that on startup and offers to install it for you (Ollama's own official installer, shown in full before running — say no anytime to install it yourself instead)
-- A pulled chat model (and, for web/document RAG, an embedding model)
+- **[LM Studio](https://lmstudio.ai/)** installed, with its local server running (Developer tab → Start Server) — `aicoder` warns you at startup if it can't reach it
+- A downloaded chat model (and, for web/document RAG, an embedding model)
 
 ---
 
@@ -110,7 +110,6 @@ Optional extras:
 
 ```bash
 pip install "ai-coder[mcp]"     # MCP server support
-pip install "ai-coder[openai]"  # non-Ollama backends (see "Using a different backend")
 ```
 
 ### From source (development)
@@ -123,12 +122,16 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"          # dev extras include pytest
 ```
 
-### Pull the models
+### Download the models
 
-```bash
-ollama pull qwen2.5-coder:7b   # the agent driver
-ollama pull nomic-embed-text   # embeddings (web research + documents)
+In LM Studio's own model search, grab:
+
 ```
+lmstudio-community/Qwen2.5-Coder-7B-Instruct-GGUF   # the agent driver (or an MLX build on Apple Silicon)
+nomic-ai/nomic-embed-text-v1.5-GGUF                 # embeddings (web research + documents)
+```
+
+Then load the chat model (`lms load <model-id>`, or from LM Studio's UI) — `aicoder`'s `/model` command lists whatever's downloaded and switches between them.
 
 ### Verify
 
@@ -140,23 +143,25 @@ aicoder --selftest    # confirms the configured model can call tools
 
 ## Choosing a model
 
-The default is **`qwen2.5-coder:7b`** — a good balance of code quality and tool-calling reliability. Pick based on your hardware (the model and its context share memory):
+The default is **`qwen2.5-coder-7b-instruct`** — a good balance of code quality and tool-calling reliability. Pick based on your hardware (the model and its context share memory):
 
 | RAM / VRAM | Suggested models | Notes |
 |---|---|---|
-| 8 GB | `qwen2.5-coder:3b`, `qwen3:4b`, `granite4:micro` | fast, weaker at multi-step work |
-| 16 GB | **`qwen2.5-coder:7b`** (default), `qwen2.5-coder:14b`, `deepseek-coder-v2:16b`, `gpt-oss:20b` | the sweet spot |
-| 24 GB+ | `qwen3-coder:30b`, `devstral:24b`, `codestral:latest`, `qwen2.5-coder:32b` | strongest, needs more memory |
+| 8 GB | Qwen2.5-Coder-3B-Instruct, Qwen3-4B, Granite-4.0-Micro | fast, weaker at multi-step work |
+| 16 GB | **Qwen2.5-Coder-7B-Instruct** (default), Qwen2.5-Coder-14B-Instruct, DeepSeek-Coder-V2-Lite-16B, gpt-oss-20b | the sweet spot |
+| 24 GB+ | Qwen3-Coder-30B, Devstral-24B, Codestral, Qwen2.5-Coder-32B-Instruct | strongest, needs more memory |
 
-Switch models with the in-session `/model` command — type `/model` alone for an interactive picker. It lists every model you've pulled (current one marked) **plus curated recommendations you haven't pulled yet**, grouped into the same three tiers above with a one-line reason for each; pick one and it pulls (with confirmation) and switches in one step. Or `/model <name>` to switch straight to a name you already know. Either way it's **saved as your default for new sessions**, not just this one. `aicoder --model <name>` overrides the model for one run only (without changing the saved default), and you can also edit `~/.aicoder/config.yaml` directly. Run `aicoder --selftest` after switching to confirm the model supports tool calling.
+On Apple Silicon, prefer an **MLX** build over GGUF where available — LM Studio's native format there, and measurably faster (a live benchmark on an M1 Pro showed ~49% higher throughput for the same model/quant vs. GGUF).
 
-> **Embeddings** (`nomic-embed-text` by default) are only needed for web research and document ingestion. Alternatives: `bge-m3`, `nomic-embed-text-v2-moe`. Embeddings always go through Ollama regardless of which `model.provider` drives the agent (see below).
+Switch models with the in-session `/model` command — type `/model` alone for an interactive picker listing every model already downloaded in LM Studio (current one marked); pick one and it switches (unloading the old one, loading the new). Or `/model <name>` to switch straight to an id you already know (see `lms ls` for exact ids). Either way it's **saved as your default for new sessions**, not just this one. Grabbing a *new* model is a manual step in LM Studio itself — its own CLI download flow proved too unreliable to automate. `aicoder --model <name>` overrides the model for one run only (without changing the saved default), and you can also edit `~/.aicoder/config.yaml` directly. Run `aicoder --selftest` after switching to confirm the model supports tool calling.
 
-### Using a different backend (not Ollama)
+> **Embeddings** (`text-embedding-nomic-embed-text-v1.5` by default) are only needed for web research and document ingestion.
 
-Ollama is the default and needs no setup beyond what's above, but AICoder isn't tied to it. Set `model.provider: openai_compatible` in `~/.aicoder/config.yaml` to point at **any server or API that speaks the OpenAI chat-completions protocol** — which is nearly everything at this point:
+### Using a different backend
 
-- **A local runtime sized to your hardware** — a heavy GPU box might run **vLLM** for higher throughput, a lighter machine might run **llama.cpp server** or **LM Studio**; **text-generation-webui** and **LocalAI** work too.
+LM Studio is the default and needs no config changes beyond what's above, but AICoder isn't tied to it — under the hood it always talks the OpenAI chat-completions protocol, so it works with **any server or API that speaks it**:
+
+- **A local runtime sized to your hardware** — a heavy GPU box might run **vLLM** for higher throughput, a lighter machine might run **llama.cpp server**; **text-generation-webui** and **LocalAI** work too.
 - **A hosted API, with your own key** — OpenAI, OpenRouter, Groq, Together, or anything else that speaks the same protocol.
 
 ```yaml
@@ -167,7 +172,7 @@ model:
   api_key: ""                              # blank for local servers that don't check it
 ```
 
-Needs the optional `langchain-openai` package: `pip install "ai-coder[openai]"` (a missing package gives a clean error, not a traceback). With a non-Ollama provider, the Ollama-specific startup checks and the rich `/model` picker (which lists/pulls Ollama models specifically) don't apply — `/model` instead shows your current provider/model/endpoint, and `/model <name>` still works to switch the model id on the same endpoint. RAG's embedding model always goes through Ollama regardless of this setting.
+The rich `/model` picker (list/switch what's downloaded) is LM Studio-specific — detected by `base_url` matching its default (`http://localhost:1234/v1`). Point `base_url` elsewhere and `/model` falls back to showing your current model/endpoint, with `/model <name>` still working to switch the model id on the same endpoint.
 
 ---
 
@@ -190,7 +195,7 @@ Point it at a different directory, or override the model for one session:
 
 ```bash
 aicoder --workspace ./another-project
-aicoder --model qwen2.5-coder:14b
+aicoder --model qwen2.5-coder-14b-instruct
 ```
 
 Conversations don't survive quitting `aicoder` by default — pick up where you
@@ -218,11 +223,11 @@ outside a real terminal) automatically falls back to a plain print-and-scroll
 REPL instead — the full-screen UI needs a real terminal to attach to.
 
 **Paste a screenshot with Ctrl+V, just like Claude Code.** Claude's own model
-is natively multimodal, but Ollama's local ecosystem splits vision and coding
-into separate model families — the curated coding models are all text-only.
-So this is a two-model handoff: a vision-capable Ollama model
-(`qwen2.5vl:7b` by default — see `vision.model` in the config) looks at the
-image and describes it, then your regular coding model acts on that
+is natively multimodal, but LM Studio's local model ecosystem splits vision
+and coding into separate model families — the coding models are text-only.
+So this is a two-model handoff: a vision-capable model (nothing configured by
+default — download one and set `vision.model`, or use `/vision model`) looks
+at the image and describes it, then your regular coding model acts on that
 description with its normal tools. Works the same way via `/vision <path>` if
 you'd rather point at a file than paste. You can paste more than one image
 before sending your message — all of them are described together in one go.
@@ -231,8 +236,8 @@ Once the vision model has seen an image, a follow-up question with no path
 don't have to re-attach it each time.
 
 Pick a different vision model with `/vision model` — the same arrow-key
-picker as `/model`, just for vision (installed models + a curated
-recommended list by tier, plus "Other…" for anything else), or switch
+picker as `/model`, listing vision-capable models already downloaded in LM
+Studio (current one marked), plus "Other…" for anything else — or switch
 straight to one with `/vision model <name>`.
 
 Clipboard image paste needs no extra setup on macOS or Windows. **On Linux**,
@@ -252,13 +257,13 @@ aicoder [options]
 | Flag | Description |
 |---|---|
 | `--workspace`, `-w PATH` | Project directory to work in (default: current directory) |
-| `--model`, `-m MODEL` | Ollama model to use this session (overrides config) |
+| `--model`, `-m MODEL` | Model id to use this session (overrides config) |
 | `--shell-mode {always,never,smart}` | Shell confirmation mode for this session |
 | `--selftest` | Verify the model supports tool calling, then exit |
 | `--config` | Show the config file path and current settings, then exit |
 | `--version` | Print the version |
 
-If Ollama isn't running or the model isn't pulled, AICoder warns you at startup.
+If LM Studio isn't reachable or the model isn't loaded, AICoder warns you at startup.
 
 ---
 
@@ -290,7 +295,7 @@ A few literal commands are handled by the REPL; everything else is a task for th
 | `/plan <goal>` | Decompose a goal into an ordered, resumable task list and build it |
 | `/resume` | Continue an in-progress plan |
 | `/init` | Analyze the codebase and write/update `AICODER.md` — takes effect immediately in this session |
-| `/model [name]` | With Ollama: pick a model interactively (lists pulled models, current marked), or switch straight to `<name>` — either way, saved as your default. With a different `model.provider`: shows your current model/endpoint; `/model <name>` still switches |
+| `/model [name]` | With LM Studio: pick a model interactively (lists downloaded models, current marked), or switch straight to `<name>` — either way, saved as your default. Pointed at a different server: shows your current model/endpoint; `/model <name>` still switches |
 | `/status` | Show the workspace, model, provider, and Developer Mode profile |
 | `/context` | Show conversation size vs. the auto-compaction budget |
 | `/compact` | Summarize older turns now — the same compaction that runs automatically, on demand |
@@ -485,7 +490,7 @@ If something fails, the agent reads the output, fixes the cause, and re-runs unt
 Local models have a training cutoff. AICoder works around that with retrieval:
 
 - The agent can **`research`** a topic on the web (DuckDuckGo) and **cache** the results + top pages in a local **ChromaDB** vector store, then **`rag_search`** to recall them.
-- Content is chunked and embedded (via your Ollama embedding model), with a relevance cutoff so unrelated queries return nothing rather than noise.
+- Content is chunked and embedded (via your configured embedding model, served by LM Studio), with a relevance cutoff so unrelated queries return nothing rather than noise.
 - **Scoping:** web research is **global** (a shared cache across projects), while ingested **documents are per-project** (a PRD from one project won't surface in another).
 
 Manage it from the REPL:
@@ -583,10 +588,10 @@ Auto-created at `~/.aicoder/config.yaml` on first run. Key settings (abridged):
 
 ```yaml
 model:
-  provider: ollama                # ollama | openai_compatible (see "Using a different backend")
-  name: qwen2.5-coder:7b          # any model you've pulled (or your other backend's model id)
-  base_url: http://localhost:11434
-  api_key: ""                     # openai_compatible only; blank for local servers with no auth
+  provider: openai_compatible     # always openai_compatible; kept as an explicit field
+  name: qwen2.5-coder-7b-instruct # any model downloaded in LM Studio (or another server's model id)
+  base_url: http://localhost:1234/v1   # LM Studio's default; point elsewhere for a different server
+  api_key: ""                     # blank for local servers with no auth
   temperature: 0.3                # conversational
   temperature_precise: 0.1        # for precise/code output
   context_length: 16384           # num_ctx; also drives history-compaction budget
@@ -607,7 +612,7 @@ search:
   timeout_seconds: 10             # per web request
 
 knowledge:
-  embedding_model: "nomic-embed-text"   # "" = use the chat model
+  embedding_model: "text-embedding-nomic-embed-text-v1.5"   # "" = use the chat model
 
 mcp:
   servers: {}                     # see "MCP servers"
@@ -671,7 +676,7 @@ ai-coder/
 ├── cli.py                  # entry point (the `aicoder` command)
 ├── core/
 │   ├── config.py           # configuration (~/.aicoder/config.yaml)
-│   ├── model.py            # ChatOllama factory + native tool binding + tool-call recovery
+│   ├── model.py            # OpenAI-compatible chat model factory + native tool binding + tool-call recovery
 │   ├── context.py          # workspace scanner / repo overview
 │   ├── project.py          # test- & lint-command detection
 │   └── code_index.py       # symbol index (find_symbol)
@@ -710,7 +715,7 @@ See [`docs/features.md`](docs/features.md) (how it works), [`docs/architecture.m
 - **Single agentic loop.** One assistant that plans, edits, runs, and verifies any repo — via native tool calling, with a fallback that recovers tool calls a local model emits as text.
 - **RAG + memory, not weight training.** Staying current and "learning" is done by retrieving cached web/document knowledge and durable project facts at query time; the model's weights are never modified.
 - **Sync core, async edges.** The loop is synchronous and transparent; MCP sessions run on a background event loop bridged into it.
-- **Strictly local.** Ollama for inference and embeddings; ChromaDB for the vector store; all data under `~/.aicoder/`.
+- **Strictly local.** LM Studio for inference and embeddings; ChromaDB for the vector store; all data under `~/.aicoder/`.
 
 ---
 
@@ -721,19 +726,18 @@ Being honest about the tradeoffs:
 - **Local-model intelligence.** A 7B-class local model is a strong *supervised* assistant, not an autonomous senior engineer. Expect to review its diffs; lean on the verify loop. Bigger models help.
 - **Context window.** Bounded by your hardware (default 16k tokens). History is compacted to fit, but very large tasks still benefit from `plan`.
 - **No image input.** Local code models are text-only.
-- **Tool-calling reliability** varies by model — `qwen2.5-coder:7b`+ is recommended; `--selftest` checks it.
+- **Tool-calling reliability** varies by model — `qwen2.5-coder-7b-instruct`+ is recommended; `--selftest` checks it.
 - **MCP** is stdio-only for now; **Windows** support is best-effort (the common paths are handled).
 
 ---
 
 ## Troubleshooting
 
-- **"Ollama isn't installed"** — say yes to the install prompt (it runs Ollama's own official installer), or install manually from [ollama.com](https://ollama.com/).
-- **"Cannot reach Ollama" / model warnings** — make sure Ollama is running (`ollama serve`) and the model is pulled (`ollama pull qwen2.5-coder:7b`).
-- **`--selftest` says the model can't call tools** — switch to a stronger model (`aicoder --model qwen2.5-coder:7b`).
-- **Web research / `read_document` says it couldn't ingest** — pull an embedding model (`ollama pull nomic-embed-text`).
+- **"Couldn't reach LM Studio"** — make sure LM Studio's local server is running (Developer tab → Start Server), and that a model is loaded (`lms load <model-id>`, or from the UI).
+- **`--selftest` says the model can't call tools** — switch to a stronger model (`aicoder --model qwen2.5-coder-7b-instruct`).
+- **Web research / `read_document` says it couldn't ingest** — download an embedding model in LM Studio (e.g. `nomic-ai/nomic-embed-text-v1.5-GGUF`) and set `knowledge.embedding_model` if it's not the default.
 - **MCP servers don't load** — install the extra (`pip install "ai-coder[mcp]"`) and check the server `command`/`args` in your config.
-- **"model.provider is 'openai_compatible' but... isn't installed"** — install the extra: `pip install "ai-coder[openai]"`.
+- **"langchain-openai isn't installed"** — `pip install langchain-openai` (this is a core dependency, so it should already be present — a missing install usually means a broken environment).
 - **Edits get declined / the agent loops** — small models sometimes struggle; rephrase, or switch to a larger model.
 - **See your settings** — `aicoder --config`.
 

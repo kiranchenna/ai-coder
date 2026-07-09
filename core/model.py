@@ -1,8 +1,9 @@
 """
 core/model.py — Chat model factory with native tool calling
 ============================================================
-Single place that constructs the local Ollama chat model and binds tools to
-it for native function/tool calling (the agentic core depends on this).
+Single place that constructs the chat model (LM Studio, or any other
+OpenAI-compatible local server/hosted API) and binds tools to it for native
+function/tool calling (the agentic core depends on this).
 
 Replaces the prompt-and-regex-parse approach of the old pipeline: the model
 now returns structured tool calls that the agent loop executes directly.
@@ -13,12 +14,11 @@ from __future__ import annotations
 import json
 from typing import Sequence
 
-from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage
 
 
 # ── Tool-call recovery from text ────────────────────────────────────────────────
-# Some local models (e.g. qwen2.5-coder over Ollama) emit tool calls as JSON text
+# Some local models (e.g. qwen2.5-coder) emit tool calls as JSON text
 # in the message content instead of via native tool calling. These helpers recover
 # them so the agent loop can execute them anyway.
 
@@ -91,20 +91,19 @@ _NO_AUTH_PLACEHOLDER = "not-needed"
 
 
 def _build_openai_compatible(model_name: str, base_url: str, api_key: str, temperature: float):
-    """Build a ChatOpenAI pointed at any OpenAI-compatible endpoint — a local
-    server (llama.cpp server, vLLM, LM Studio, text-generation-webui,
-    LocalAI, ...) or a hosted API (OpenAI, OpenRouter, Groq, Together, ...).
+    """Build a ChatOpenAI pointed at any OpenAI-compatible endpoint — LM
+    Studio's default, but also any other local server (llama.cpp server,
+    vLLM, text-generation-webui, LocalAI, ...) or hosted API (OpenAI,
+    OpenRouter, Groq, Together, ...) via model.base_url.
 
-    Raises RuntimeError with an actionable message if the optional
-    `langchain-openai` package isn't installed, rather than silently falling
-    back to a different provider than the one explicitly configured.
+    Raises RuntimeError with an actionable message if the `langchain-openai`
+    package isn't installed, rather than crashing on an obscure ImportError.
     """
     try:
         from langchain_openai import ChatOpenAI
     except ImportError as e:
         raise RuntimeError(
-            "model.provider is 'openai_compatible' but the 'langchain-openai' package "
-            'isn\'t installed. Run: pip install "ai-coder[openai]"'
+            "the 'langchain-openai' package isn't installed. Run: pip install langchain-openai"
         ) from e
 
     return ChatOpenAI(
@@ -117,10 +116,9 @@ def _build_openai_compatible(model_name: str, base_url: str, api_key: str, tempe
 
 def get_chat_model(precise: bool = False, tools: Sequence | None = None, model: str | None = None):
     """
-    Build a chat model from the active config's `model.provider`:
-    "ollama" (default, via ChatOllama) or "openai_compatible" (via ChatOpenAI
-    pointed at a custom base_url — any local server or hosted API that speaks
-    the OpenAI chat-completions protocol).
+    Build a chat model from the active config — a ChatOpenAI pointed at
+    model.base_url (LM Studio's default local server, or any other
+    OpenAI-compatible endpoint).
 
     Args:
         precise: Use the low-temperature setting (for code/edits) instead of
@@ -138,55 +136,138 @@ def get_chat_model(precise: bool = False, tools: Sequence | None = None, model: 
     name = model or cfg.model_name
     temperature = cfg.model_temperature_precise if precise else cfg.model_temperature
 
-    if cfg.model_provider == "openai_compatible":
-        llm = _build_openai_compatible(name, cfg.model_base_url, cfg.model_api_key, temperature)
-    else:
-        llm = ChatOllama(
-            model=name,
-            base_url=cfg.model_base_url,
-            temperature=temperature,
-            num_ctx=cfg.model_context_length,  # default 16384; see DEFAULT_CONFIG
-        )
+    llm = _build_openai_compatible(name, cfg.model_base_url, cfg.model_api_key, temperature)
     if tools:
         return llm.bind_tools(list(tools))
     return llm
 
 
-# ── Model discovery (for `/model` and the startup pull-check) ──────────────────
+# ── LM Studio discovery (for `/model`, `/vision model`, and the startup
+#    reachability check) ─────────────────────────────────────────────────────
+# This shells out to the `lms` CLI: LM Studio's OpenAI-compatible /v1/models
+# endpoint does list every model downloaded to disk (confirmed live —
+# includes idle, not just loaded, ones), but only returns bare ids, no size
+# or the `vision` flag /vision model's picker needs — `lms ls --json` is the
+# source for that richer data. Every function here degrades to "unavailable"
+# (raises, or returns None) rather than assuming LM Studio specifically is
+# what's listening on base_url — model.base_url can still point at any other
+# OpenAI-compatible server, where `lms` legitimately won't be on PATH.
 
-def list_ollama_models(base_url: str) -> list[dict]:
-    """
-    Query Ollama for the models pulled locally. Returns a list of
-    ``{"name": str, "size": int (bytes)}`` sorted by name. Raises (network
-    error, bad status) so callers can distinguish "no models" from
-    "couldn't reach Ollama" instead of getting an empty list either way.
-    """
-    import httpx
+def _run_lms(*args: str, timeout: float = 15) -> str:
+    """Run an `lms` subcommand and return its stdout. Raises RuntimeError with
+    an actionable message on any failure (not on PATH, non-zero exit, or a
+    timeout) so callers can fall back to the generic openai_compatible UI."""
+    import subprocess
 
-    resp = httpx.get(f"{base_url.rstrip('/')}/api/tags", timeout=5)
-    resp.raise_for_status()
-    models = resp.json().get("models", [])
+    try:
+        result = subprocess.run(
+            ["lms", *args], capture_output=True, text=True, timeout=timeout,
+        )
+    except FileNotFoundError as e:
+        raise RuntimeError(
+            "'lms' isn't on your PATH — install LM Studio (lmstudio.ai), which "
+            "installs its CLI, or set it up manually with `lms bootstrap`."
+        ) from e
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"'lms {' '.join(args)}' timed out.") from e
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "lms failed").strip())
+    return result.stdout
+
+
+def list_lmstudio_models(vision_only: bool = False) -> list[dict]:
+    """
+    Every LLM downloaded to disk in LM Studio, via `lms ls --llm --json`.
+    Returns ``{"name": modelKey, "size": bytes, "vision": bool}`` sorted by
+    name — ``modelKey`` is what both `lms load` and the OpenAI-compatible
+    API's ``model`` field expect. Raises (see ``_run_lms``) so callers can
+    distinguish "no models downloaded" from "can't reach LM Studio".
+    """
+    import json
+
+    out = _run_lms("ls", "--llm", "--json")
+    models = json.loads(out or "[]")
+    entries = [
+        {
+            "name": m["modelKey"],
+            "size": int(m.get("sizeBytes", 0)),
+            "vision": bool(m.get("vision", False)),
+        }
+        for m in models
+    ]
+    if vision_only:
+        entries = [e for e in entries if e["vision"]]
+    return sorted(entries, key=lambda m: m["name"])
+
+
+def list_lmstudio_embedding_models() -> list[dict]:
+    """Every embedding model downloaded to disk, via `lms ls --embedding --json`
+    — used to suggest a sensible default when switching to LM Studio, since an
+    empty knowledge.embedding_model falls back to the *chat* model (core.config's
+    Config.embedding_model), which isn't an embedding model at all."""
+    import json
+
+    out = _run_lms("ls", "--embedding", "--json")
+    models = json.loads(out or "[]")
     return sorted(
-        (
-            {"name": m.get("name") or m.get("model", ""), "size": int(m.get("size", 0))}
-            for m in models
-        ),
+        ({"name": m["modelKey"], "size": int(m.get("sizeBytes", 0))} for m in models),
         key=lambda m: m["name"],
     )
 
 
-def is_model_pulled(base_url: str, model_name: str) -> bool | None:
-    """
-    Whether ``model_name`` (or a close match, ignoring the ``:tag`` suffix) is
-    among Ollama's locally pulled models. Returns None if Ollama can't be
-    reached — callers should treat that as "unknown", not "not pulled".
-    """
+def is_lmstudio_model_downloaded(model_name: str) -> bool | None:
+    """Whether ``model_name`` is among LM Studio's locally downloaded models.
+    Returns None if LM Studio/`lms` can't be reached."""
     try:
-        models = list_ollama_models(base_url)
+        models = list_lmstudio_models()
     except Exception:
         return None
-    base = model_name.split(":")[0]
-    return any(base in m["name"] for m in models)
+    return any(m["name"] == model_name for m in models)
+
+
+def switch_lmstudio_model(name: str, *, timeout: float = 120) -> None:
+    """
+    Load ``name`` in LM Studio, unloading any other currently-loaded LLM
+    first (embedding models are left alone — RAG needs those to stay up) so
+    only one coding model occupies RAM at a time. Raises RuntimeError on
+    failure — the caller is responsible for deciding whether that's fatal or
+    just a warning (see agent/loop.py's _switch_model).
+    """
+    import json
+
+    try:
+        loaded = json.loads(_run_lms("ps", "--json") or "[]")
+    except RuntimeError:
+        loaded = []  # `lms ps` failing isn't fatal here — just skip the unload step
+
+    # `lms load` on an already-loaded modelKey doesn't reuse it — confirmed
+    # live: it spins up a second, separately-identified instance (a ":2"
+    # suffix) rather than being a no-op, silently doubling RAM usage.
+    already_loaded = any(m.get("type") == "llm" and m.get("identifier") == name for m in loaded)
+
+    for m in loaded:
+        if m.get("type") == "llm" and m.get("identifier") != name:
+            try:
+                _run_lms("unload", m["identifier"], timeout=timeout)
+            except RuntimeError:
+                pass  # best-effort — a stuck old model shouldn't block loading the new one
+    if not already_loaded:
+        _run_lms("load", name, "-y", timeout=timeout)
+
+
+def is_lmstudio_reachable(base_url: str) -> set[str] | None:
+    """The set of model ids LM Studio reports via its OpenAI-compatible
+    /v1/models (every model downloaded to disk, whether idle or loaded —
+    see the module docstring above), or None if the server can't be reached
+    at all."""
+    import httpx
+
+    try:
+        resp = httpx.get(f"{base_url.rstrip('/')}/models", timeout=5)
+        resp.raise_for_status()
+        return {m.get("id", "") for m in resp.json().get("data", [])}
+    except Exception:
+        return None
 
 
 def selftest() -> bool:
@@ -197,9 +278,10 @@ def selftest() -> bool:
     it. Returns True on success. Prints a human-readable result.
     """
     from langchain_core.tools import tool
-    from rich.console import Console
 
-    console = Console()
+    from core.console import SafeConsole
+
+    console = SafeConsole()
 
     @tool
     def get_time() -> str:
@@ -208,7 +290,8 @@ def selftest() -> bool:
 
     from core.config import get_config
 
-    model_name = get_config().model_name
+    cfg = get_config()
+    model_name = cfg.model_name
     console.print(f"[dim]Tool-calling self-test against [bold]{model_name}[/bold]…[/dim]")
 
     try:
@@ -218,7 +301,8 @@ def selftest() -> bool:
         )
     except Exception as e:
         console.print(f"[red]✗ Model call failed: {e}[/red]")
-        console.print("[dim]Is Ollama running, and is the model pulled?[/dim]")
+        console.print(f"[dim]Is the server at {cfg.model_base_url} running, and is "
+                      f"'{model_name}' loaded? (LM Studio: `lms load {model_name}`)[/dim]")
         return False
 
     native = getattr(ai, "tool_calls", None) or []
@@ -239,7 +323,7 @@ def selftest() -> bool:
 
     console.print(
         "[yellow]✗ Model responded without calling the tool (natively or as text).[/yellow]\n"
-        "[dim]This model may not support tool calling well. "
-        "Try a stronger one, e.g.: ollama pull qwen2.5-coder:7b[/dim]"
+        "[dim]This model may not support tool calling well. Try a stronger one, e.g.: "
+        "lms get qwen2.5-coder-7b-instruct[/dim]"
     )
     return False

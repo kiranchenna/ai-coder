@@ -33,12 +33,12 @@ def _make_config(tmp_path, overrides=None):
 
 def test_default_model_name(tmp_path):
     cfg = _make_config(tmp_path)
-    assert cfg.model_name == "qwen2.5-coder:7b"
+    assert cfg.model_name == "qwen2.5-coder-7b-instruct"
 
 
-def test_default_model_provider_is_ollama(tmp_path):
+def test_default_model_provider_is_openai_compatible(tmp_path):
     cfg = _make_config(tmp_path)
-    assert cfg.model_provider == "ollama"
+    assert cfg.model_provider == "openai_compatible"
 
 
 def test_model_provider_normalizes_case_and_whitespace(tmp_path):

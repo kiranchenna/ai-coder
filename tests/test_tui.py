@@ -60,6 +60,31 @@ def test_richlog_console_respects_markup_false():
     adapter.print("[INFO] not markup\n", end="", markup=False)
 
 
+def test_richlog_console_falls_back_on_malformed_markup_instead_of_raising():
+    # Live-reproduced crash: a tool result / model answer containing something
+    # that *looks* like a markup tag but isn't (e.g. code with mismatched
+    # brackets) raised MarkupError inside Text.from_markup and took the whole
+    # app down. Must degrade to literal text, never raise.
+    log = RichLog()
+    adapter = RichLogConsole(log)
+    adapter.print("[red]⚠ Error: closing tag '[/<m>]' at position 3334 doesn't match any open tag[/red]")
+
+
+def test_safe_markup_text_falls_back_to_literal_on_bad_tag():
+    from agent.tui import _safe_markup_text
+
+    text = _safe_markup_text("closing tag '[/<m>]' doesn't match any open tag")
+    assert "[/<m>]" in text.plain
+
+
+def test_safe_markup_text_still_parses_valid_markup():
+    from agent.tui import _safe_markup_text
+
+    text = _safe_markup_text("[bold]hello[/bold]")
+    assert text.plain == "hello"
+    assert any(span.style == "bold" for span in text.spans)
+
+
 def test_patch_consoles_restores_originals():
     import agent.loop as loop_mod
 
@@ -184,11 +209,11 @@ async def test_unmount_restores_consoles_and_shuts_down_mcp():
 
 # ── Confirm.ask / Prompt.ask bridge — the generic TUI-native modal ──────────────
 # Every existing Confirm.ask/Prompt.ask call site in the codebase (shell/file
-# confirmations, the Ollama install offer, devmode's discuss loop, ...) is
-# exercised from a worker thread in real use; these tests replicate that
-# exactly via App.run_worker(thread=True), the same mechanism production code
-# uses, rather than calling the bridge functions directly from the test's
-# async context (which App.call_from_thread explicitly forbids).
+# confirmations, devmode's discuss loop, ...) is exercised from a worker
+# thread in real use; these tests replicate that exactly via
+# App.run_worker(thread=True), the same mechanism production code uses,
+# rather than calling the bridge functions directly from the test's async
+# context (which App.call_from_thread explicitly forbids).
 
 async def _await_modal(pilot, app, attempts: int = 50, min_depth: int = 2) -> None:
     """Wait until the screen stack reaches at least `min_depth` — pass
@@ -387,11 +412,11 @@ async def test_model_command_arrow_key_picker_switches_model(monkeypatch, tmp_pa
     original = cfg.raw()["model"]["name"]
 
     fake_models = [
-        {"name": original, "size": 4_700_000_000},
-        {"name": "qwen2.5-coder:14b", "size": 9_000_000_000},
+        {"name": original, "size": 4_700_000_000, "vision": False},
+        {"name": "qwen2.5-coder-14b-instruct", "size": 9_000_000_000, "vision": False},
     ]
-    monkeypatch.setattr(model_mod, "list_ollama_models", lambda base_url: fake_models)
-    monkeypatch.setattr(model_mod, "is_model_pulled", lambda base_url, name: True)
+    monkeypatch.setattr(model_mod, "list_lmstudio_models", lambda **k: fake_models)
+    monkeypatch.setattr(model_mod, "switch_lmstudio_model", lambda name: None)
 
     ws = tmp_path / "workspace"
     ws.mkdir()
@@ -407,7 +432,7 @@ async def test_model_command_arrow_key_picker_switches_model(monkeypatch, tmp_pa
             await pilot.press("enter")  # select it
             await app.workers.wait_for_complete()
             await pilot.pause()
-        assert cfg.raw()["model"]["name"] == "qwen2.5-coder:14b"
+        assert cfg.raw()["model"]["name"] == "qwen2.5-coder-14b-instruct"
     finally:
         cfg.raw()["model"]["name"] = original
 
@@ -419,14 +444,15 @@ async def test_vision_model_command_arrow_key_picker_switches_model(monkeypatch,
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
     cfg = _isolate_config(monkeypatch, cfg_dir)
-    original = cfg.raw()["vision"]["model"]
+    original = cfg.raw()["vision"]["model"] or "current-vlm"
+    cfg.raw()["vision"]["model"] = original
 
     fake_models = [
-        {"name": original, "size": 6_000_000_000},
-        {"name": "llava:7b", "size": 4_700_000_000},
+        {"name": original, "size": 6_000_000_000, "vision": True},
+        {"name": "some-other-vlm", "size": 4_700_000_000, "vision": True},
     ]
-    monkeypatch.setattr(model_mod, "list_ollama_models", lambda base_url: fake_models)
-    monkeypatch.setattr(model_mod, "is_model_pulled", lambda base_url, name: True)
+    monkeypatch.setattr(model_mod, "list_lmstudio_models", lambda **k: fake_models)
+    monkeypatch.setattr(model_mod, "is_lmstudio_model_downloaded", lambda name: True)
 
     ws = tmp_path / "workspace"
     ws.mkdir()
@@ -442,7 +468,7 @@ async def test_vision_model_command_arrow_key_picker_switches_model(monkeypatch,
             await pilot.press("enter")  # select it
             await app.workers.wait_for_complete()
             await pilot.pause()
-        assert cfg.raw()["vision"]["model"] == "llava:7b"
+        assert cfg.raw()["vision"]["model"] == "some-other-vlm"
     finally:
         cfg.raw()["vision"]["model"] = original
 
@@ -450,7 +476,6 @@ async def test_vision_model_command_arrow_key_picker_switches_model(monkeypatch,
 @pytest.mark.asyncio
 async def test_model_picker_other_entry_switches_to_a_typed_name(monkeypatch, tmp_path):
     import core.model as model_mod
-    from rich.prompt import Confirm
     from textual.widgets import OptionList
 
     cfg_dir = tmp_path / "cfg"
@@ -458,10 +483,9 @@ async def test_model_picker_other_entry_switches_to_a_typed_name(monkeypatch, tm
     cfg = _isolate_config(monkeypatch, cfg_dir)
     original = cfg.raw()["model"]["name"]
 
-    monkeypatch.setattr(model_mod, "list_ollama_models",
-                        lambda base_url: [{"name": original, "size": 1}])
-    monkeypatch.setattr(model_mod, "is_model_pulled", lambda base_url, name: True)
-    monkeypatch.setattr(Confirm, "ask", staticmethod(lambda *a, **k: True))
+    monkeypatch.setattr(model_mod, "list_lmstudio_models",
+                        lambda **k: [{"name": original, "size": 1, "vision": False}])
+    monkeypatch.setattr(model_mod, "switch_lmstudio_model", lambda name: None)
 
     ws = tmp_path / "workspace"
     ws.mkdir()
@@ -592,7 +616,8 @@ def test_model_menu_label_marks_the_current_model():
 # _invoke() branches on is_tui_active() (rich.live.Live needs a real Console,
 # which the TUI's console adapter isn't) — a slow scripted LLM (chunks spaced
 # out in real time) lets these tests observe the status widget mid-turn and
-# measure interrupt latency deterministically, without depending on Ollama.
+# measure interrupt latency deterministically, without depending on a real
+# model server.
 
 class _SlowScriptedLLM:
     def __init__(self, n_chunks: int, delay: float):
@@ -905,7 +930,7 @@ async def test_submitting_with_pending_image_routes_through_vision_handoff(monke
     app = AICoderApp(ws)
     async with app.run_test() as pilot:
         await pilot.pause()
-        monkeypatch.setattr("core.model.is_model_pulled", lambda base_url, name: True)
+        monkeypatch.setattr("core.model.is_lmstudio_model_downloaded", lambda name: True)
 
         class FakeVision:
             def invoke(self, messages):

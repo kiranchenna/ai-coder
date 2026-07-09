@@ -11,10 +11,10 @@ from __future__ import annotations
 import difflib
 from pathlib import Path
 
-from rich.console import Console
+from core.console import SafeConsole
 from rich.rule import Rule
 
-console = Console()
+console = SafeConsole()
 
 _MAX = 4000
 

@@ -25,9 +25,9 @@ from __future__ import annotations
 import asyncio
 import threading
 
-from rich.console import Console
+from core.console import SafeConsole
 
-console = Console()
+console = SafeConsole()
 
 CONNECT_TIMEOUT = 30.0
 CALL_TIMEOUT = 120.0

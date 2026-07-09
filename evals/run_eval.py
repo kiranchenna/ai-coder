@@ -14,7 +14,7 @@ Single-phase keeps the wall-clock bounded and isolates the levers' effect.
     python -m evals.run_eval --fixture invoicing --phase data_model --repeat 2
     python -m evals.run_eval --judge-model qwen2.5-coder:14b   # stronger grader
 
-This needs Ollama running and the model pulled. Each config is a full phase run
+This needs the configured model server running and the model downloaded. Each config is a full phase run
 (best_of=3 + reflect ≈ several model calls), so a 4-config sweep is many minutes
 on a 7B — that cost is the point: it tells you what to keep and what to cut.
 """

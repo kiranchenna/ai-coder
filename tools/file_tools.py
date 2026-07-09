@@ -10,11 +10,11 @@ import difflib
 from pathlib import Path
 from typing import Iterator
 
-from rich.console import Console
+from core.console import SafeConsole
 from rich.panel import Panel
 from rich.syntax import Syntax
 
-console = Console()
+console = SafeConsole()
 
 
 def resolve(workspace: Path, rel_path: str) -> Path:

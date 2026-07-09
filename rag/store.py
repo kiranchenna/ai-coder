@@ -1,8 +1,9 @@
 """
 rag/store.py — Vector knowledge base with chunking
 ===================================================
-Persistent ChromaDB store + Ollama embeddings, with real overlapping text
-chunking and per-item TTL.
+Persistent ChromaDB store with real overlapping text chunking and per-item
+TTL. Embeddings go through model.base_url's OpenAI-compatible /v1/embeddings
+endpoint (LM Studio's default) — see _build_embedding_function.
 
 This is what lets the agent "learn / stay current": researched web pages and
 documents are chunked, embedded, and retrieved semantically at query time —
@@ -42,9 +43,22 @@ def _warn_search_error(exc: Exception) -> None:
 
     print(
         f"[aicoder] Knowledge-base search failed ({type(exc).__name__}: {exc}). "
-        "RAG results will be empty. Check that the embedding model is pulled "
-        "(`ollama pull nomic-embed-text`) and Ollama is running.",
+        "RAG results will be empty. Check that the embedding model is downloaded, LM "
+        "Studio's server is running, and knowledge.embedding_model in config.yaml names it.",
         file=sys.stderr,
+    )
+
+
+def _build_embedding_function(cfg):
+    """A chromadb OpenAIEmbeddingFunction pointed at model.base_url — LM
+    Studio's default OpenAI-compatible /v1/embeddings endpoint, or any other
+    server that speaks it."""
+    from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
+
+    return OpenAIEmbeddingFunction(
+        api_key=cfg.model_api_key or "not-needed",
+        model_name=cfg.embedding_model,
+        api_base=cfg.model_base_url.rstrip("/"),
     )
 
 
@@ -97,7 +111,6 @@ class KnowledgeBase:
             return
         try:
             import chromadb
-            from chromadb.utils.embedding_functions import OllamaEmbeddingFunction
         except ImportError as e:  # pragma: no cover
             raise ImportError("chromadb is not installed. Run: pip install chromadb") from e
 
@@ -106,12 +119,7 @@ class KnowledgeBase:
         cfg = get_config()
         CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 
-        # The current OllamaEmbeddingFunction strips any /api/embeddings suffix
-        # and uses the modern /api/embed endpoint, so pass the base URL.
-        embedding_fn = OllamaEmbeddingFunction(
-            url=cfg.model_base_url.rstrip("/"),
-            model_name=cfg.embedding_model,
-        )
+        embedding_fn = _build_embedding_function(cfg)
         self._client = chromadb.PersistentClient(path=str(CHROMA_DIR))
         self._collection = self._client.get_or_create_collection(
             name=COLLECTION,

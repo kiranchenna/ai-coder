@@ -40,7 +40,7 @@ def _isolate_memory_dir(monkeypatch, tmp_path):
 def _session(responses):
     """An AgentSession on an empty temp workspace, driven by a scripted LLM."""
     ws = Path(tempfile.mkdtemp())
-    s = AgentSession(ws)               # offline: ChatOllama is constructed lazily
+    s = AgentSession(ws)               # offline: the chat model is constructed lazily
     s.llm = ScriptedLLM(responses)     # swap in the script
     s._history_budget = 10_000_000     # don't compact during these tests
     return s
@@ -241,7 +241,7 @@ def test_log_safe_truncates_long_strings_but_keeps_short_ones():
 class _InterruptingLLM:
     """Fires request_interrupt() on the session partway through the stream —
     lets us test the interrupt check deterministically, without depending on
-    real Ollama's chunk timing."""
+    a real model server's chunk timing."""
 
     def __init__(self, session, chunks, interrupt_after: int):
         self.session = session
@@ -345,150 +345,103 @@ def _isolate_config(monkeypatch, tmp_path):
 
 
 def test_switch_model_persists_and_rebinds(tmp_path, monkeypatch):
-    import core.model as model_mod
     from agent.loop import _switch_model
-
-    monkeypatch.setattr(model_mod, "is_model_pulled", lambda base_url, name: True)
-    cfg = _isolate_config(monkeypatch, tmp_path)
-    original = cfg.raw()["model"]["name"]
-    session = SimpleNamespace(llm=None, tools=[])
-    try:
-        _switch_model("qwen2.5-coder:14b", session)
-        assert cfg.raw()["model"]["name"] == "qwen2.5-coder:14b"
-        assert session.llm is not None                     # rebuilt for the new model
-        saved = yaml.safe_load((tmp_path / "config.yaml").read_text())
-        assert saved["model"]["name"] == "qwen2.5-coder:14b"   # persisted, not session-only
-    finally:
-        cfg.raw()["model"]["name"] = original
-
-
-def test_switch_model_warns_when_not_pulled(tmp_path, monkeypatch, capsys):
-    import core.model as model_mod
-    from agent.loop import _switch_model
-
-    monkeypatch.setattr(model_mod, "is_model_pulled", lambda base_url, name: False)
-    cfg = _isolate_config(monkeypatch, tmp_path)
-    original = cfg.raw()["model"]["name"]
-    try:
-        _switch_model("not-pulled:99b", SimpleNamespace(llm=None, tools=[]))
-        assert "may not be pulled yet" in capsys.readouterr().out
-    finally:
-        cfg.raw()["model"]["name"] = original
-
-
-def test_model_command_direct_name_switches(tmp_path, monkeypatch, capsys):
-    import core.model as model_mod
-    from agent.loop import _handle_model_command
-
-    monkeypatch.setattr(model_mod, "is_model_pulled", lambda base_url, name: True)
-    cfg = _isolate_config(monkeypatch, tmp_path)
-    original = cfg.raw()["model"]["name"]
-    try:
-        _handle_model_command("qwen2.5-coder:14b", SimpleNamespace(llm=None, tools=[]))
-        assert cfg.raw()["model"]["name"] == "qwen2.5-coder:14b"
-        assert "saved as your default" in capsys.readouterr().out
-    finally:
-        cfg.raw()["model"]["name"] = original
-
-
-def test_model_command_lists_and_selects(tmp_path, monkeypatch, capsys):
-    import core.model as model_mod
-    from agent.loop import _handle_model_command
-    from rich.prompt import Prompt
-
-    cfg = _isolate_config(monkeypatch, tmp_path)
-    original = cfg.raw()["model"]["name"]
-    fake_models = [
-        {"name": original, "size": 4_000_000_000},
-        {"name": "qwen2.5-coder:14b", "size": 9_000_000_000},
-    ]
-    monkeypatch.setattr(model_mod, "list_ollama_models", lambda base_url: fake_models)
-    monkeypatch.setattr(model_mod, "is_model_pulled", lambda base_url, name: True)
-    monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: "2"))  # pick the 2nd entry
-    try:
-        _handle_model_command("", SimpleNamespace(llm=None, tools=[]))
-        out = capsys.readouterr().out
-        assert "(current)" in out                          # the listing marks the active model
-        assert cfg.raw()["model"]["name"] == "qwen2.5-coder:14b"
-    finally:
-        cfg.raw()["model"]["name"] = original
-
-
-def test_model_command_blank_keeps_current(tmp_path, monkeypatch, capsys):
-    import core.model as model_mod
-    from agent.loop import _handle_model_command
-    from rich.prompt import Prompt
-
-    cfg = _isolate_config(monkeypatch, tmp_path)
-    original = cfg.raw()["model"]["name"]
-    monkeypatch.setattr(model_mod, "list_ollama_models",
-                        lambda base_url: [{"name": original, "size": 1}])
-    monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: ""))
-    _handle_model_command("", SimpleNamespace(llm=None, tools=[]))
-    assert cfg.raw()["model"]["name"] == original           # blank = cancel, no change
-    assert "Kept current model" in capsys.readouterr().out
-
-
-def test_model_command_rejects_out_of_range_choice(tmp_path, monkeypatch, capsys):
-    import core.model as model_mod
-    from agent.loop import _handle_model_command
-    from rich.prompt import Prompt
-
-    cfg = _isolate_config(monkeypatch, tmp_path)
-    original = cfg.raw()["model"]["name"]
-    monkeypatch.setattr(model_mod, "list_ollama_models",
-                        lambda base_url: [{"name": original, "size": 1}])
-    monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: "99"))
-    _handle_model_command("", SimpleNamespace(llm=None, tools=[]))
-    assert cfg.raw()["model"]["name"] == original           # out of range → no change
-    assert "Invalid selection" in capsys.readouterr().out
-
-
-def test_model_command_unreachable_ollama_suggests_direct_switch(tmp_path, monkeypatch, capsys):
-    import core.model as model_mod
-    from agent.loop import _handle_model_command
-
-    _isolate_config(monkeypatch, tmp_path)
-
-    def boom(base_url):
-        raise ConnectionError("no ollama")
-
-    monkeypatch.setattr(model_mod, "list_ollama_models", boom)
-    _handle_model_command("", SimpleNamespace(llm=None, tools=[]))
-    assert "Couldn't reach Ollama" in capsys.readouterr().out
-
-
-# ── /model — openai_compatible provider (no Ollama discovery API) ──────────────
-
-def test_model_command_non_ollama_shows_info_not_picker(tmp_path, monkeypatch, capsys):
-    from agent.loop import _handle_model_command
 
     cfg = _isolate_config(monkeypatch, tmp_path)
     saved = dict(cfg.raw()["model"])
+    cfg.raw()["model"]["base_url"] = "http://localhost:8080/v1"  # not LM Studio — no lms shellout
+    session = SimpleNamespace(llm=None, tools=[])
     try:
-        cfg.raw()["model"]["provider"] = "openai_compatible"
-        cfg.raw()["model"]["base_url"] = "http://localhost:8080/v1"
-        _handle_model_command("", SimpleNamespace(llm=None, tools=[]))
-        out = capsys.readouterr().out
-        assert "openai_compatible" in out
-        assert "http://localhost:8080/v1" in out
-        assert "config.yaml" in out
-        assert "Available models (via Ollama)" not in out   # not the Ollama picker
+        _switch_model("qwen2.5-coder-14b-instruct", session)
+        assert cfg.raw()["model"]["name"] == "qwen2.5-coder-14b-instruct"
+        assert session.llm is not None                     # rebuilt for the new model
+        saved_on_disk = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        assert saved_on_disk["model"]["name"] == "qwen2.5-coder-14b-instruct"  # persisted
     finally:
         cfg.raw()["model"] = saved
 
 
-def test_model_command_direct_name_still_works_for_non_ollama_provider(tmp_path, monkeypatch, capsys):
+def test_switch_model_lmstudio_loads_it(tmp_path, monkeypatch):
+    import core.model as model_mod
+    from agent.loop import _switch_model
+
+    cfg = _isolate_config(monkeypatch, tmp_path)
+    saved = dict(cfg.raw()["model"])
+    _set_lmstudio_provider(cfg)
+    calls = []
+    monkeypatch.setattr(model_mod, "switch_lmstudio_model", lambda name: calls.append(name))
+    try:
+        _switch_model("other-model", SimpleNamespace(llm=None, tools=[]))
+        assert calls == ["other-model"]
+    finally:
+        cfg.raw()["model"] = saved
+
+
+def test_switch_model_lmstudio_load_failure_warns_not_raises(tmp_path, monkeypatch, capsys):
+    import core.model as model_mod
+    from agent.loop import _switch_model
+
+    cfg = _isolate_config(monkeypatch, tmp_path)
+    saved = dict(cfg.raw()["model"])
+    _set_lmstudio_provider(cfg)
+
+    def raise_not_downloaded(name):
+        raise RuntimeError("not downloaded")
+
+    monkeypatch.setattr(model_mod, "switch_lmstudio_model", raise_not_downloaded)
+    try:
+        _switch_model("missing-model", SimpleNamespace(llm=None, tools=[]))  # must not raise
+        assert "Couldn't load 'missing-model' in LM Studio" in capsys.readouterr().out
+    finally:
+        cfg.raw()["model"] = saved
+
+
+def test_model_command_direct_name_switches(tmp_path, monkeypatch, capsys):
+    from agent.loop import _handle_model_command
+
+    cfg = _isolate_config(monkeypatch, tmp_path)
+    saved = dict(cfg.raw()["model"])
+    cfg.raw()["model"]["base_url"] = "http://localhost:8080/v1"
+    try:
+        _handle_model_command("qwen2.5-coder-14b-instruct", SimpleNamespace(llm=None, tools=[]))
+        assert cfg.raw()["model"]["name"] == "qwen2.5-coder-14b-instruct"
+        assert "saved as your default" in capsys.readouterr().out
+    finally:
+        cfg.raw()["model"] = saved
+
+
+def test_model_command_custom_openai_endpoint_never_tries_lmstudio(tmp_path, monkeypatch, capsys):
+    # Regression test: base_url must actually match LM Studio's default
+    # (localhost:1234) before treating an openai_compatible config as LM
+    # Studio — live-caught bug where "lms happens to be on this machine's
+    # PATH" alone caused a *different* configured server's model picker to
+    # silently show LM Studio's local models instead.
     import core.model as model_mod
     from agent.loop import _handle_model_command
 
     cfg = _isolate_config(monkeypatch, tmp_path)
     saved = dict(cfg.raw()["model"])
-    monkeypatch.setattr(model_mod, "is_model_pulled",
-                        lambda *a, **k: (_ for _ in ()).throw(AssertionError(
-                            "is_model_pulled must not be called for a non-ollama provider")))
+    cfg.raw()["model"]["base_url"] = "http://localhost:8080/v1"  # NOT LM Studio's default
+    monkeypatch.setattr(
+        model_mod, "list_lmstudio_models",
+        lambda **k: (_ for _ in ()).throw(AssertionError(
+            "list_lmstudio_models must not be called for a non-LM-Studio endpoint")),
+    )
     try:
-        cfg.raw()["model"]["provider"] = "openai_compatible"
+        _handle_model_command("", SimpleNamespace(llm=None, tools=[]))
+        out = capsys.readouterr().out
+        assert "http://localhost:8080/v1" in out   # the generic panel
+    finally:
+        cfg.raw()["model"] = saved
+
+
+def test_model_command_direct_name_still_works_for_custom_endpoint(tmp_path, monkeypatch, capsys):
+    from agent.loop import _handle_model_command
+
+    cfg = _isolate_config(monkeypatch, tmp_path)
+    saved = dict(cfg.raw()["model"])
+    cfg.raw()["model"]["base_url"] = "http://localhost:8080/v1"
+    try:
         _handle_model_command("gpt-4o-mini", SimpleNamespace(llm=None, tools=[]))
         assert cfg.raw()["model"]["name"] == "gpt-4o-mini"
         assert "saved as your default" in capsys.readouterr().out
@@ -496,293 +449,113 @@ def test_model_command_direct_name_still_works_for_non_ollama_provider(tmp_path,
         cfg.raw()["model"] = saved
 
 
-# ── Model-picker filtering — keep obviously-wrong-category models out ──────────
-# Ollama's /api/tags lists every locally-pulled model with no way to tell an
-# embedding-only model or a vision model from a coding model — so both
-# pickers filter their own "Installed" section rather than showing anything
-# pulled indiscriminately (a real mistake made live while testing /vision
-# model: an embedding model got picked by accident).
+# ── /model — the LM Studio path (openai_compatible pointed at its default url) ──
 
-def test_exclude_embedding_model_drops_the_configured_one():
-    from agent.loop import _exclude_embedding_model
-
-    cfg = SimpleNamespace(get=lambda *k, default=None: "nomic-embed-text-v2-moe"
-                          if k == ("knowledge", "embedding_model") else default)
-    installed = [
-        {"name": "qwen2.5-coder:7b", "size": 1},
-        {"name": "nomic-embed-text-v2-moe", "size": 1},
-    ]
-    result = _exclude_embedding_model(installed, cfg)
-    assert [m["name"] for m in result] == ["qwen2.5-coder:7b"]
+def _set_lmstudio_provider(cfg, model_name="qwen2.5-coder-7b-instruct-mlx"):
+    cfg.raw()["model"]["provider"] = "openai_compatible"
+    cfg.raw()["model"]["base_url"] = "http://localhost:1234/v1"
+    cfg.raw()["model"]["name"] = model_name
 
 
-def test_exclude_embedding_model_noop_when_not_configured():
-    from agent.loop import _exclude_embedding_model
-
-    cfg = SimpleNamespace(get=lambda *k, default=None: default)
-    installed = [{"name": "qwen2.5-coder:7b", "size": 1}]
-    assert _exclude_embedding_model(installed, cfg) == installed
-
-
-def test_filter_vision_capable_keeps_known_families_drops_others():
-    from agent.loop import _filter_vision_capable
-
-    cfg = SimpleNamespace(vision_model="qwen2.5vl:7b")
-    installed = [
-        {"name": "qwen2.5vl:7b", "size": 1},       # known vision family
-        {"name": "llava:13b", "size": 1},          # known vision family
-        {"name": "qwen2.5-coder:7b", "size": 1},   # coding model — dropped
-        {"name": "nomic-embed-text-v2-moe", "size": 1},  # embedding — dropped
-    ]
-    result = {m["name"] for m in _filter_vision_capable(installed, cfg)}
-    assert result == {"qwen2.5vl:7b", "llava:13b"}
-
-
-def test_filter_vision_capable_keeps_a_custom_configured_model_regardless():
-    from agent.loop import _filter_vision_capable
-
-    # A model set directly in config.yaml that isn't in our curated
-    # VISION_MODELS families must still show as "installed", not get dropped.
-    cfg = SimpleNamespace(vision_model="my-custom-vlm:latest")
-    installed = [{"name": "my-custom-vlm:latest", "size": 1}]
-    assert _filter_vision_capable(installed, cfg) == installed
-
-
-def test_model_command_picker_excludes_the_embedding_model(tmp_path, monkeypatch, capsys):
+def test_model_command_lmstudio_lists_and_selects(tmp_path, monkeypatch, capsys):
     import core.model as model_mod
     from agent.loop import _handle_model_command
     from rich.prompt import Prompt
 
     cfg = _isolate_config(monkeypatch, tmp_path)
-    original = cfg.raw()["model"]["name"]
+    saved = dict(cfg.raw()["model"])
+    _set_lmstudio_provider(cfg, "current-model")
     fake_models = [
-        {"name": original, "size": 1},
-        {"name": cfg.raw()["knowledge"]["embedding_model"], "size": 1},
+        {"name": "current-model", "size": 4_000_000_000, "vision": False},
+        {"name": "other-model", "size": 9_000_000_000, "vision": False},
     ]
-    monkeypatch.setattr(model_mod, "list_ollama_models", lambda base_url: fake_models)
-    monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: ""))
-    _handle_model_command("", SimpleNamespace(llm=None, tools=[]))
-    out = capsys.readouterr().out
-    assert cfg.raw()["knowledge"]["embedding_model"] not in out
-
-
-def test_vision_model_command_picker_excludes_non_vision_models(tmp_path, monkeypatch, capsys):
-    import core.model as model_mod
-    from agent.loop import _handle_vision_model_command
-    from rich.prompt import Prompt
-
-    cfg = _isolate_config(monkeypatch, tmp_path)
-    original = cfg.raw()["vision"]["model"]
-    fake_models = [
-        {"name": original, "size": 1},
-        {"name": "qwen2.5-coder:7b", "size": 1},  # a coding model, happens to be pulled
-    ]
-    monkeypatch.setattr(model_mod, "list_ollama_models", lambda base_url: fake_models)
-    monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: ""))
-    _handle_vision_model_command()
-    out = capsys.readouterr().out
-    assert "qwen2.5-coder:7b" not in out
-
-
-# ── /model — curated "not yet installed" recommendations ────────────────────────
-
-def test_model_menu_entries_dedupes_installed_from_recommended():
-    from agent.loop import _model_menu_entries
-
-    cfg = SimpleNamespace(model_name="qwen2.5-coder:7b")
-    installed = [{"name": "qwen2.5-coder:7b", "size": 4_700_000_000}]
-    entries = _model_menu_entries(cfg, installed)
-
-    tags = [e["tag"] for e in entries]
-    assert tags.count("qwen2.5-coder:7b") == 1        # installed → not also recommended
-    assert entries[0]["installed"] and entries[0]["current"]
-    assert any(not e["installed"] for e in entries)    # catalog picks still offered
-
-
-def test_model_menu_entries_no_installed_still_offers_full_catalog():
-    # A brand-new user with zero pulled models should still get every
-    # recommendation, not a dead end.
-    from agent.loop import _model_menu_entries
-    from core.model_catalog import RECOMMENDED_MODELS
-
-    cfg = SimpleNamespace(model_name="qwen2.5-coder:7b")
-    entries = _model_menu_entries(cfg, [])
-    assert len(entries) == len(RECOMMENDED_MODELS)
-    assert all(not e["installed"] for e in entries)
-
-
-def test_model_menu_entries_orders_installed_then_tiers_in_order():
-    from agent.loop import _model_menu_entries
-
-    cfg = SimpleNamespace(model_name="x")
-    entries = _model_menu_entries(cfg, [{"name": "x", "size": 1}])
-    sections = list(dict.fromkeys(e["section"] for e in entries))  # first-seen order
-    assert sections[0] == "Installed"
-    assert sections[1:] == [
-        "Recommended — Fast & light (~8GB RAM/VRAM)",
-        "Recommended — Balanced (~16GB) — the sweet spot",
-        "Recommended — Powerful (24GB+)",
-    ]
-
-
-def test_render_model_menu_shows_tier_and_not_pulled_marker(capsys):
-    from agent.loop import _model_menu_entries, _render_model_menu
-
-    cfg = SimpleNamespace(model_name="qwen2.5-coder:7b")
-    entries = _model_menu_entries(cfg, [{"name": "qwen2.5-coder:7b", "size": 4_700_000_000}])
-    _render_model_menu(entries)
-    out = capsys.readouterr().out
-    assert "Recommended — Fast & light" in out
-    assert "not pulled" in out
-    assert "(current)" in out
-
-
-def test_confirm_and_pull_declined_makes_no_change(tmp_path, monkeypatch, capsys):
-    from agent.loop import _confirm_and_pull
-    from rich.prompt import Confirm
-
-    _isolate_config(monkeypatch, tmp_path)
-    called = []
-    monkeypatch.setattr(Confirm, "ask", staticmethod(lambda *a, **k: False))
-    monkeypatch.setattr("tools.shell_tools.run_command",
-                        lambda *a, **k: called.append(1) or ("", "", 0))
-    _confirm_and_pull("qwen3-coder:30b", 19_000_000_000, SimpleNamespace(llm=None, tools=[]))
-    assert not called                                   # never attempted the pull
-    assert "No change made" in capsys.readouterr().out
-
-
-def test_confirm_and_pull_success_switches_and_persists(tmp_path, monkeypatch, capsys):
-    import core.model as model_mod
-    from agent.loop import _confirm_and_pull
-    from rich.prompt import Confirm
-
-    cfg = _isolate_config(monkeypatch, tmp_path)
-    original = cfg.raw()["model"]["name"]
-    monkeypatch.setattr(Confirm, "ask", staticmethod(lambda *a, **k: True))
-    monkeypatch.setattr("tools.shell_tools.run_command", lambda *a, **k: ("done", "", 0))
-    monkeypatch.setattr(model_mod, "is_model_pulled", lambda base_url, name: True)
-    try:
-        _confirm_and_pull("qwen3-coder:30b", 19_000_000_000, SimpleNamespace(llm=None, tools=[]))
-        assert cfg.raw()["model"]["name"] == "qwen3-coder:30b"
-        out = capsys.readouterr().out
-        assert "Pulled qwen3-coder:30b" in out
-        assert "saved as your default" in out
-    finally:
-        cfg.raw()["model"]["name"] = original
-
-
-def test_confirm_and_pull_failure_does_not_switch(tmp_path, monkeypatch, capsys):
-    from agent.loop import _confirm_and_pull
-    from rich.prompt import Confirm
-
-    cfg = _isolate_config(monkeypatch, tmp_path)
-    original = cfg.raw()["model"]["name"]
-    monkeypatch.setattr(Confirm, "ask", staticmethod(lambda *a, **k: True))
-    monkeypatch.setattr("tools.shell_tools.run_command",
-                        lambda *a, **k: ("", "no space left on device", 1))
-    _confirm_and_pull("qwen3-coder:30b", 19_000_000_000, SimpleNamespace(llm=None, tools=[]))
-    assert cfg.raw()["model"]["name"] == original           # failed pull → no switch
-    assert "Failed to pull" in capsys.readouterr().out
-
-
-def test_model_command_selecting_recommended_triggers_pull_flow(tmp_path, monkeypatch, capsys):
-    import core.model as model_mod
-    from agent.loop import _handle_model_command
-    from rich.prompt import Confirm, Prompt
-
-    cfg = _isolate_config(monkeypatch, tmp_path)
-    original = cfg.raw()["model"]["name"]
-    monkeypatch.setattr(model_mod, "list_ollama_models",
-                        lambda base_url: [{"name": original, "size": 1}])
-    monkeypatch.setattr(model_mod, "is_model_pulled", lambda base_url, name: True)
-    # Entry 1 is the installed/current model; the first catalog (fast-tier) pick is #2.
+    monkeypatch.setattr(model_mod, "list_lmstudio_models", lambda **k: fake_models)
+    monkeypatch.setattr(model_mod, "switch_lmstudio_model", lambda name: None)
     monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: "2"))
-    monkeypatch.setattr(Confirm, "ask", staticmethod(lambda *a, **k: True))
-    monkeypatch.setattr("tools.shell_tools.run_command", lambda *a, **k: ("done", "", 0))
     try:
         _handle_model_command("", SimpleNamespace(llm=None, tools=[]))
-        assert cfg.raw()["model"]["name"] == "qwen2.5-coder:3b"   # first fast-tier entry
+        out = capsys.readouterr().out
+        assert "Available models (via LM Studio)" in out
+        assert cfg.raw()["model"]["name"] == "other-model"
     finally:
-        cfg.raw()["model"]["name"] = original
+        cfg.raw()["model"] = saved
 
 
-# ─── "Other…" — any Ollama model beyond the curated catalog ────────────────────
-# _pull_arbitrary_model takes raw user input (unlike _confirm_and_pull's
-# hardcoded catalog tags), so it must never go through run_command's
-# shell=True — these tests specifically pin down subprocess.run with an argv
-# list, since a shell-string path here would be a real injection risk.
-
-def test_pull_arbitrary_model_declined_makes_no_change(tmp_path, monkeypatch, capsys):
-    from agent.loop import _pull_arbitrary_model
-    from rich.prompt import Confirm
-
-    _isolate_config(monkeypatch, tmp_path)
-    called = []
-    monkeypatch.setattr(Confirm, "ask", staticmethod(lambda *a, **k: False))
-    monkeypatch.setattr("subprocess.run", lambda *a, **k: called.append(1))
-    _pull_arbitrary_model("llama3.2:1b", SimpleNamespace(llm=None, tools=[]))
-    assert not called
-    assert "No change made" in capsys.readouterr().out
-
-
-def test_pull_arbitrary_model_uses_argv_list_not_a_shell_string(tmp_path, monkeypatch, capsys):
+def test_model_command_lmstudio_no_models_shows_message(tmp_path, monkeypatch, capsys):
     import core.model as model_mod
-    from agent.loop import _pull_arbitrary_model
-    from rich.prompt import Confirm
+    from agent.loop import _handle_model_command
 
     cfg = _isolate_config(monkeypatch, tmp_path)
-    original = cfg.raw()["model"]["name"]
-    captured = {}
-
-    def fake_run(args, **kwargs):
-        captured["args"] = args
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(Confirm, "ask", staticmethod(lambda *a, **k: True))
-    monkeypatch.setattr("subprocess.run", fake_run)
-    monkeypatch.setattr(model_mod, "is_model_pulled", lambda base_url, name: True)
+    saved = dict(cfg.raw()["model"])
+    _set_lmstudio_provider(cfg)
+    monkeypatch.setattr(model_mod, "list_lmstudio_models", lambda **k: [])
     try:
-        # A name containing shell metacharacters — if this were ever
-        # interpolated into a shell string, it would inject a second command.
-        tag = "llama3.2:1b; rm -rf /tmp/should-not-run"
-        _pull_arbitrary_model(tag, SimpleNamespace(llm=None, tools=[]))
-        # argv list form: the whole tag is ONE element, never shell-parsed.
-        assert captured["args"] == ["ollama", "pull", tag]
-        assert cfg.raw()["model"]["name"] == tag
+        _handle_model_command("", SimpleNamespace(llm=None, tools=[]))
+        assert "No models downloaded in LM Studio yet" in capsys.readouterr().out
     finally:
-        cfg.raw()["model"]["name"] = original
+        cfg.raw()["model"] = saved
 
 
-def test_pull_arbitrary_model_failure_does_not_switch(tmp_path, monkeypatch, capsys):
-    from agent.loop import _pull_arbitrary_model
-    from rich.prompt import Confirm
+def test_model_command_lmstudio_unreachable_falls_back_to_generic_panel(tmp_path, monkeypatch, capsys):
+    import core.model as model_mod
+    from agent.loop import _handle_model_command
 
     cfg = _isolate_config(monkeypatch, tmp_path)
-    original = cfg.raw()["model"]["name"]
-    monkeypatch.setattr(Confirm, "ask", staticmethod(lambda *a, **k: True))
-    monkeypatch.setattr(
-        "subprocess.run",
-        lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="not found"),
-    )
-    _pull_arbitrary_model("bogus:model", SimpleNamespace(llm=None, tools=[]))
-    assert cfg.raw()["model"]["name"] == original
-    assert "Failed to pull" in capsys.readouterr().out
+    saved = dict(cfg.raw()["model"])
+    _set_lmstudio_provider(cfg)
+
+    def raise_unreachable(**k):
+        raise RuntimeError("'lms' isn't on your PATH")
+
+    monkeypatch.setattr(model_mod, "list_lmstudio_models", raise_unreachable)
+    try:
+        _handle_model_command("", SimpleNamespace(llm=None, tools=[]))
+        out = capsys.readouterr().out
+        assert "Couldn't reach LM Studio" in out    # the generic status panel, not a crash
+        assert "Available models (via LM Studio)" not in out
+    finally:
+        cfg.raw()["model"] = saved
 
 
-def test_pull_arbitrary_model_ollama_not_on_path(tmp_path, monkeypatch, capsys):
-    from agent.loop import _pull_arbitrary_model
-    from rich.prompt import Confirm
+def test_model_command_lmstudio_blank_keeps_current(tmp_path, monkeypatch, capsys):
+    import core.model as model_mod
+    from agent.loop import _handle_model_command
+    from rich.prompt import Prompt
 
-    _isolate_config(monkeypatch, tmp_path)
-    monkeypatch.setattr(Confirm, "ask", staticmethod(lambda *a, **k: True))
+    cfg = _isolate_config(monkeypatch, tmp_path)
+    saved = dict(cfg.raw()["model"])
+    _set_lmstudio_provider(cfg, "current-model")
+    monkeypatch.setattr(model_mod, "list_lmstudio_models",
+                        lambda **k: [{"name": "current-model", "size": 1, "vision": False}])
+    monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: ""))
+    try:
+        _handle_model_command("", SimpleNamespace(llm=None, tools=[]))
+        assert cfg.raw()["model"]["name"] == "current-model"    # blank = cancel, no change
+        assert "Kept current model" in capsys.readouterr().out
+    finally:
+        cfg.raw()["model"] = saved
 
-    def raise_not_found(*a, **k):
-        raise FileNotFoundError()
 
-    monkeypatch.setattr("subprocess.run", raise_not_found)
-    _pull_arbitrary_model("llama3.2:1b", SimpleNamespace(llm=None, tools=[]))
-    assert "isn't on your PATH" in capsys.readouterr().out
+def test_model_command_lmstudio_rejects_out_of_range_choice(tmp_path, monkeypatch, capsys):
+    import core.model as model_mod
+    from agent.loop import _handle_model_command
+    from rich.prompt import Prompt
 
+    cfg = _isolate_config(monkeypatch, tmp_path)
+    saved = dict(cfg.raw()["model"])
+    _set_lmstudio_provider(cfg, "current-model")
+    monkeypatch.setattr(model_mod, "list_lmstudio_models",
+                        lambda **k: [{"name": "current-model", "size": 1, "vision": False}])
+    monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: "99"))
+    try:
+        _handle_model_command("", SimpleNamespace(llm=None, tools=[]))
+        assert cfg.raw()["model"]["name"] == "current-model"    # out of range → no change
+        assert "Invalid selection" in capsys.readouterr().out
+    finally:
+        cfg.raw()["model"] = saved
+
+
+# ── /model's "Other…" entry — an exact LM Studio model id, no pull flow ─────────
 
 def test_handle_custom_model_entry_blank_makes_no_change(tmp_path, monkeypatch, capsys):
     from agent.loop import _handle_custom_model_entry
@@ -796,48 +569,19 @@ def test_handle_custom_model_entry_blank_makes_no_change(tmp_path, monkeypatch, 
     assert "No change made" in capsys.readouterr().out
 
 
-def test_handle_custom_model_entry_already_pulled_switches_directly(tmp_path, monkeypatch):
-    import core.model as model_mod
+def test_handle_custom_model_entry_switches_directly(tmp_path, monkeypatch):
     from agent.loop import _handle_custom_model_entry
     from rich.prompt import Prompt
 
     cfg = _isolate_config(monkeypatch, tmp_path)
-    original = cfg.raw()["model"]["name"]
-    monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: "llama3.2:1b"))
-    monkeypatch.setattr(model_mod, "is_model_pulled", lambda base_url, name: True)
-    pull_calls = []
-    monkeypatch.setattr("subprocess.run", lambda *a, **k: pull_calls.append(1))
+    saved = dict(cfg.raw()["model"])
+    cfg.raw()["model"]["base_url"] = "http://localhost:8080/v1"  # not LM Studio — no lms shellout
+    monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: "some-model-id"))
     try:
         _handle_custom_model_entry(SimpleNamespace(llm=None, tools=[]))
-        assert cfg.raw()["model"]["name"] == "llama3.2:1b"
-        assert not pull_calls  # already pulled — no pull attempted
+        assert cfg.raw()["model"]["name"] == "some-model-id"
     finally:
-        cfg.raw()["model"]["name"] = original
-
-
-def test_handle_custom_model_entry_not_pulled_triggers_pull_flow(tmp_path, monkeypatch):
-    import core.model as model_mod
-    from agent.loop import _handle_custom_model_entry
-    from rich.prompt import Confirm, Prompt
-
-    cfg = _isolate_config(monkeypatch, tmp_path)
-    original = cfg.raw()["model"]["name"]
-    monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: "llama3.2:1b"))
-    monkeypatch.setattr(model_mod, "is_model_pulled", lambda base_url, name: False)
-    monkeypatch.setattr(Confirm, "ask", staticmethod(lambda *a, **k: True))
-    captured = {}
-
-    def fake_run(args, **kwargs):
-        captured["args"] = args
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr("subprocess.run", fake_run)
-    try:
-        _handle_custom_model_entry(SimpleNamespace(llm=None, tools=[]))
-        assert captured["args"] == ["ollama", "pull", "llama3.2:1b"]
-        assert cfg.raw()["model"]["name"] == "llama3.2:1b"
-    finally:
-        cfg.raw()["model"]["name"] = original
+        cfg.raw()["model"] = saved
 
 
 def test_model_command_other_choice_routes_to_custom_entry(tmp_path, monkeypatch):
@@ -846,19 +590,19 @@ def test_model_command_other_choice_routes_to_custom_entry(tmp_path, monkeypatch
     from rich.prompt import Prompt
 
     cfg = _isolate_config(monkeypatch, tmp_path)
-    original = cfg.raw()["model"]["name"]
-    monkeypatch.setattr(model_mod, "list_ollama_models",
-                        lambda base_url: [{"name": original, "size": 1}])
-    monkeypatch.setattr(model_mod, "is_model_pulled", lambda base_url, name: True)
+    saved = dict(cfg.raw()["model"])
+    _set_lmstudio_provider(cfg, "current-model")
+    monkeypatch.setattr(model_mod, "list_lmstudio_models",
+                        lambda **k: [{"name": "current-model", "size": 1, "vision": False}])
     # First Prompt.ask call is the picker's "1-N/o" choice, second is the
-    # custom-entry's model-name prompt.
-    answers = iter(["o", "llama3.2:1b"])
+    # custom-entry's model-id prompt.
+    answers = iter(["o", "typed-model-id"])
     monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: next(answers)))
     try:
         _handle_model_command("", SimpleNamespace(llm=None, tools=[]))
-        assert cfg.raw()["model"]["name"] == "llama3.2:1b"
+        assert cfg.raw()["model"]["name"] == "typed-model-id"
     finally:
-        cfg.raw()["model"]["name"] = original
+        cfg.raw()["model"] = saved
 
 
 def test_help_shows_active_devmode_profile(capsys):
@@ -959,8 +703,9 @@ def _fake_image(tmp_path, name="screenshot.png") -> Path:
 def test_describe_images_builds_multimodal_message(tmp_path, monkeypatch):
     import agent.loop as loop_mod
 
-    _isolate_config(monkeypatch, tmp_path / "cfg")
-    monkeypatch.setattr("core.model.is_model_pulled", lambda base_url, name: True)
+    cfg = _isolate_config(monkeypatch, tmp_path / "cfg")
+    cfg.raw()["model"]["base_url"] = "http://localhost:8080/v1"  # not LM Studio — no lms shellout
+    cfg.raw()["vision"]["model"] = "some-vlm"
     fake_vision = _FakeVisionLLM()
     monkeypatch.setattr(loop_mod, "get_chat_model", lambda **k: fake_vision)
 
@@ -972,7 +717,10 @@ def test_describe_images_builds_multimodal_message(tmp_path, monkeypatch):
     [message] = fake_vision.invoked_with
     assert message.content[0] == {"type": "text", "text": "what's wrong here?"}
     assert message.content[1]["type"] == "image_url"
-    assert message.content[1]["image_url"].startswith("data:image/png;base64,")
+    # image_url must be an object ({"url": ...}), not a bare string — a bare
+    # string is what ChatOllama tolerated but LM Studio's stricter
+    # OpenAI-compatible validation rejected outright with a 400, live.
+    assert message.content[1]["image_url"]["url"].startswith("data:image/png;base64,")
 
 
 def test_describe_images_no_vision_model_configured_raises(tmp_path, monkeypatch):
@@ -984,45 +732,23 @@ def test_describe_images_no_vision_model_configured_raises(tmp_path, monkeypatch
         s.describe_images([_fake_image(tmp_path)])
 
 
-def test_describe_images_pulls_vision_model_if_not_installed(tmp_path, monkeypatch):
-    import agent.loop as loop_mod
-    from rich.prompt import Confirm
-
-    _isolate_config(monkeypatch, tmp_path / "cfg")
-    monkeypatch.setattr("core.model.is_model_pulled", lambda base_url, name: False)
-    monkeypatch.setattr(Confirm, "ask", staticmethod(lambda *a, **k: True))
-    captured = {}
-
-    def fake_run(args, **kwargs):
-        captured["args"] = args
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr("subprocess.run", fake_run)
-    fake_vision = _FakeVisionLLM()
-    monkeypatch.setattr(loop_mod, "get_chat_model", lambda **k: fake_vision)
+def test_describe_images_lmstudio_not_downloaded_raises(tmp_path, monkeypatch):
+    cfg = _isolate_config(monkeypatch, tmp_path / "cfg")
+    _set_lmstudio_provider(cfg)
+    cfg.raw()["vision"]["model"] = "some-vlm"
+    monkeypatch.setattr("core.model.is_lmstudio_model_downloaded", lambda name: False)
 
     s = _session([[AIMessageChunk(content="ignored")]])
-    s.describe_images([_fake_image(tmp_path)])
-    assert captured["args"] == ["ollama", "pull", "qwen2.5vl:7b"]
-
-
-def test_describe_images_declines_pull_raises(tmp_path, monkeypatch):
-    from rich.prompt import Confirm
-
-    _isolate_config(monkeypatch, tmp_path / "cfg")
-    monkeypatch.setattr("core.model.is_model_pulled", lambda base_url, name: False)
-    monkeypatch.setattr(Confirm, "ask", staticmethod(lambda *a, **k: False))
-
-    s = _session([[AIMessageChunk(content="ignored")]])
-    with pytest.raises(RuntimeError, match="isn't pulled"):
+    with pytest.raises(RuntimeError, match="isn't downloaded in LM Studio"):
         s.describe_images([_fake_image(tmp_path)])
 
 
 def test_send_with_images_folds_description_into_a_normal_turn(tmp_path, monkeypatch):
     import agent.loop as loop_mod
 
-    _isolate_config(monkeypatch, tmp_path / "cfg")
-    monkeypatch.setattr("core.model.is_model_pulled", lambda base_url, name: True)
+    cfg = _isolate_config(monkeypatch, tmp_path / "cfg")
+    cfg.raw()["model"]["base_url"] = "http://localhost:8080/v1"
+    cfg.raw()["vision"]["model"] = "some-vlm"
     fake_vision = _FakeVisionLLM(description="the submit button overlaps the email field")
     monkeypatch.setattr(loop_mod, "get_chat_model", lambda **k: fake_vision)
 
@@ -1058,8 +784,9 @@ def test_vision_command_success_triggers_two_model_handoff(tmp_path, monkeypatch
     import agent.loop as loop_mod
     from agent.loop import _handle_vision_command
 
-    _isolate_config(monkeypatch, tmp_path / "cfg")
-    monkeypatch.setattr("core.model.is_model_pulled", lambda base_url, name: True)
+    cfg = _isolate_config(monkeypatch, tmp_path / "cfg")
+    cfg.raw()["model"]["base_url"] = "http://localhost:8080/v1"  # not LM Studio — no lms shellout
+    cfg.raw()["vision"]["model"] = "some-vlm"
     fake_vision = _FakeVisionLLM(description="a red error banner reading 'connection refused'")
     monkeypatch.setattr(loop_mod, "get_chat_model", lambda **k: fake_vision)
 
@@ -1077,8 +804,9 @@ def test_vision_command_success_triggers_two_model_handoff(tmp_path, monkeypatch
 def test_vision_command_relative_path_resolves_against_workspace(tmp_path, monkeypatch):
     import agent.loop as loop_mod
 
-    _isolate_config(monkeypatch, tmp_path / "cfg")
-    monkeypatch.setattr("core.model.is_model_pulled", lambda base_url, name: True)
+    cfg = _isolate_config(monkeypatch, tmp_path / "cfg")
+    cfg.raw()["model"]["base_url"] = "http://localhost:8080/v1"  # not LM Studio — no lms shellout
+    cfg.raw()["vision"]["model"] = "some-vlm"
     fake_vision = _FakeVisionLLM()
     monkeypatch.setattr(loop_mod, "get_chat_model", lambda **k: fake_vision)
 
@@ -1097,8 +825,9 @@ def test_vision_command_relative_path_resolves_against_workspace(tmp_path, monke
 def test_vision_command_follow_up_reuses_last_images(tmp_path, monkeypatch):
     import agent.loop as loop_mod
 
-    _isolate_config(monkeypatch, tmp_path / "cfg")
-    monkeypatch.setattr("core.model.is_model_pulled", lambda base_url, name: True)
+    cfg = _isolate_config(monkeypatch, tmp_path / "cfg")
+    cfg.raw()["model"]["base_url"] = "http://localhost:8080/v1"  # not LM Studio — no lms shellout
+    cfg.raw()["vision"]["model"] = "some-vlm"
     fake_vision = _FakeVisionLLM()
     monkeypatch.setattr(loop_mod, "get_chat_model", lambda **k: fake_vision)
 
@@ -1130,8 +859,9 @@ def test_vision_command_invalid_path_with_no_prior_image_still_errors(tmp_path, 
 def test_send_with_images_records_last_image_paths(tmp_path, monkeypatch):
     import agent.loop as loop_mod
 
-    _isolate_config(monkeypatch, tmp_path / "cfg")
-    monkeypatch.setattr("core.model.is_model_pulled", lambda base_url, name: True)
+    cfg = _isolate_config(monkeypatch, tmp_path / "cfg")
+    cfg.raw()["model"]["base_url"] = "http://localhost:8080/v1"  # not LM Studio — no lms shellout
+    cfg.raw()["vision"]["model"] = "some-vlm"
     monkeypatch.setattr(loop_mod, "get_chat_model", lambda **k: _FakeVisionLLM())
 
     s = _session([[AIMessageChunk(content="ok")]])
@@ -1164,84 +894,118 @@ def test_vision_command_routes_model_subcommand_to_the_picker(tmp_path, monkeypa
 
 
 def test_vision_model_command_direct_name_switches(tmp_path, monkeypatch, capsys):
-    import core.model as model_mod
     from agent.loop import _handle_vision_model_command
 
-    monkeypatch.setattr(model_mod, "is_model_pulled", lambda base_url, name: True)
     cfg = _isolate_config(monkeypatch, tmp_path)
+    cfg.raw()["model"]["base_url"] = "http://localhost:8080/v1"  # not LM Studio — no lms shellout
     try:
-        _handle_vision_model_command("qwen2.5vl:3b")
-        assert cfg.raw()["vision"]["model"] == "qwen2.5vl:3b"
+        _handle_vision_model_command("some-vlm")
+        assert cfg.raw()["vision"]["model"] == "some-vlm"
         out = capsys.readouterr().out
         assert "Set vision model" in out
         assert "saved as your default" in out
     finally:
-        cfg.raw()["vision"]["model"] = "qwen2.5vl:7b"
+        cfg.raw()["vision"]["model"] = ""
 
 
-def test_vision_model_command_picker_lists_and_selects(tmp_path, monkeypatch, capsys):
+def test_vision_model_command_lmstudio_blank_keeps_current(tmp_path, monkeypatch, capsys):
     import core.model as model_mod
     from agent.loop import _handle_vision_model_command
     from rich.prompt import Prompt
 
     cfg = _isolate_config(monkeypatch, tmp_path)
-    fake_models = [
-        {"name": "qwen2.5vl:7b", "size": 6_000_000_000},
-        {"name": "llava:7b", "size": 4_700_000_000},
-    ]
-    monkeypatch.setattr(model_mod, "list_ollama_models", lambda base_url: fake_models)
-    monkeypatch.setattr(model_mod, "is_model_pulled", lambda base_url, name: True)
-    monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: "2"))  # 2nd entry
+    saved_provider = dict(cfg.raw()["model"])
+    saved_vision = cfg.raw()["vision"]["model"]
+    _set_lmstudio_provider(cfg)
+    cfg.raw()["vision"]["model"] = "current-vlm"
+    monkeypatch.setattr(model_mod, "list_lmstudio_models",
+                        lambda vision_only=False: [{"name": "current-vlm", "size": 1, "vision": True}])
+    monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: ""))
     try:
         _handle_vision_model_command()
-        out = capsys.readouterr().out
-        assert "(current)" in out
-        assert cfg.raw()["vision"]["model"] == "llava:7b"
+        assert cfg.raw()["vision"]["model"] == "current-vlm"
+        assert "Kept current model" in capsys.readouterr().out
     finally:
-        cfg.raw()["vision"]["model"] = "qwen2.5vl:7b"
+        cfg.raw()["model"] = saved_provider
+        cfg.raw()["vision"]["model"] = saved_vision
 
 
-def test_vision_model_command_blank_keeps_current(tmp_path, monkeypatch, capsys):
+def test_vision_model_command_lmstudio_unreachable_shows_message(tmp_path, monkeypatch, capsys):
     import core.model as model_mod
     from agent.loop import _handle_vision_model_command
-    from rich.prompt import Prompt
 
     cfg = _isolate_config(monkeypatch, tmp_path)
-    original = cfg.raw()["vision"]["model"]
-    monkeypatch.setattr(model_mod, "list_ollama_models",
-                        lambda base_url: [{"name": original, "size": 1}])
-    monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: ""))
-    _handle_vision_model_command()
-    assert cfg.raw()["vision"]["model"] == original
-    assert "Kept current model" in capsys.readouterr().out
+    saved_provider = dict(cfg.raw()["model"])
+    _set_lmstudio_provider(cfg)
+
+    def boom(vision_only=False):
+        raise RuntimeError("'lms' isn't on your PATH")
+
+    monkeypatch.setattr(model_mod, "list_lmstudio_models", boom)
+    try:
+        _handle_vision_model_command()
+        assert "Couldn't reach LM Studio" in capsys.readouterr().out
+    finally:
+        cfg.raw()["model"] = saved_provider
 
 
-def test_vision_model_command_unreachable_ollama_shows_message(tmp_path, monkeypatch, capsys):
-    import core.model as model_mod
-    from agent.loop import _handle_vision_model_command
-
-    _isolate_config(monkeypatch, tmp_path)
-
-    def boom(base_url):
-        raise ConnectionError("no ollama")
-
-    monkeypatch.setattr(model_mod, "list_ollama_models", boom)
-    _handle_vision_model_command()
-    assert "Couldn't reach Ollama" in capsys.readouterr().out
-
-
-def test_vision_model_command_non_ollama_provider_shows_info(tmp_path, monkeypatch, capsys):
+def test_vision_model_command_non_lmstudio_endpoint_shows_info(tmp_path, monkeypatch, capsys):
     from agent.loop import _handle_vision_model_command
 
     cfg = _isolate_config(monkeypatch, tmp_path)
     saved_provider = cfg.raw()["model"]["provider"]
     try:
         cfg.raw()["model"]["provider"] = "openai_compatible"
+        cfg.raw()["model"]["base_url"] = "https://api.openai.com/v1"  # not LM Studio's default
         _handle_vision_model_command()
         out = capsys.readouterr().out
-        assert "only supports discovering models via Ollama" in out
+        assert "Couldn't reach LM Studio" in out
     finally:
         cfg.raw()["model"]["provider"] = saved_provider
+
+
+def test_vision_model_command_lmstudio_lists_vision_only_and_selects(tmp_path, monkeypatch, capsys):
+    import core.model as model_mod
+    from agent.loop import _handle_vision_model_command
+
+    cfg = _isolate_config(monkeypatch, tmp_path)
+    saved_provider = dict(cfg.raw()["model"])
+    saved_vision = cfg.raw()["vision"]["model"]
+    _set_lmstudio_provider(cfg)
+    cfg.raw()["vision"]["model"] = "current-vlm"
+
+    def fake_list(vision_only=False):
+        assert vision_only is True   # the picker must filter to vision-capable models only
+        return [{"name": "current-vlm", "size": 1, "vision": True},
+                {"name": "other-vlm", "size": 2, "vision": True}]
+
+    monkeypatch.setattr(model_mod, "list_lmstudio_models", fake_list)
+    monkeypatch.setattr(model_mod, "is_lmstudio_model_downloaded", lambda name: True)
+    from rich.prompt import Prompt
+    monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: "2"))
+    try:
+        _handle_vision_model_command()
+        out = capsys.readouterr().out
+        assert "Available vision models (via LM Studio)" in out
+        assert cfg.raw()["vision"]["model"] == "other-vlm"
+    finally:
+        cfg.raw()["model"] = saved_provider
+        cfg.raw()["vision"]["model"] = saved_vision
+
+
+def test_vision_model_command_lmstudio_no_vision_models_shows_message(tmp_path, monkeypatch, capsys):
+    import core.model as model_mod
+    from agent.loop import _handle_vision_model_command
+
+    cfg = _isolate_config(monkeypatch, tmp_path)
+    saved_provider = dict(cfg.raw()["model"])
+    _set_lmstudio_provider(cfg)
+    monkeypatch.setattr(model_mod, "list_lmstudio_models", lambda vision_only=False: [])
+    try:
+        _handle_vision_model_command()
+        assert "No vision-capable models downloaded in LM Studio yet" in capsys.readouterr().out
+    finally:
+        cfg.raw()["model"] = saved_provider
 
 
 def test_vision_model_command_other_entry_prompts_and_switches(tmp_path, monkeypatch):
@@ -1250,18 +1014,21 @@ def test_vision_model_command_other_entry_prompts_and_switches(tmp_path, monkeyp
     from rich.prompt import Prompt
 
     cfg = _isolate_config(monkeypatch, tmp_path)
-    original = cfg.raw()["vision"]["model"]
-    monkeypatch.setattr(model_mod, "list_ollama_models",
-                        lambda base_url: [{"name": original, "size": 1}])
-    monkeypatch.setattr(model_mod, "is_model_pulled", lambda base_url, name: True)
+    saved_provider = dict(cfg.raw()["model"])
+    saved_vision = cfg.raw()["vision"]["model"]
+    _set_lmstudio_provider(cfg)
+    cfg.raw()["vision"]["model"] = "current-vlm"
+    monkeypatch.setattr(model_mod, "list_lmstudio_models",
+                        lambda vision_only=False: [{"name": "current-vlm", "size": 1, "vision": True}])
     # Entry 1 is the installed/current vision model; "o" picks "Other…".
-    answers = iter(["o", "minicpm-v:8b"])
+    answers = iter(["o", "some-other-vlm"])
     monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: next(answers)))
     try:
         _handle_vision_model_command()
-        assert cfg.raw()["vision"]["model"] == "minicpm-v:8b"
+        assert cfg.raw()["vision"]["model"] == "some-other-vlm"
     finally:
-        cfg.raw()["vision"]["model"] = original
+        cfg.raw()["model"] = saved_provider
+        cfg.raw()["vision"]["model"] = saved_vision
 
 
 # ── run_agent_repl(continue_session=True) — the plain-REPL side of --continue ──

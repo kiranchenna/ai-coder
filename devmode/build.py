@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from rich.console import Console
+from core.console import SafeConsole
 from rich.panel import Panel
 from rich.prompt import Confirm
 from rich.rule import Rule
@@ -22,7 +22,7 @@ from core.model import balanced_json_arrays, get_chat_model
 from devmode.phases import PHASES
 from devmode.session import DevSession, _stream
 
-console = Console()
+console = SafeConsole()
 
 
 def _parse_files(text: str) -> list[dict]:

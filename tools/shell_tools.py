@@ -16,11 +16,11 @@ import subprocess
 import threading
 from pathlib import Path
 
-from rich.console import Console
+from core.console import SafeConsole
 from rich.panel import Panel
 from rich.prompt import Confirm
 
-console = Console()
+console = SafeConsole()
 
 # ─── Patterns for "smart" mode ────────────────────────────────────────────────
 # These match a *segment* of the command (split on shell operators), so a

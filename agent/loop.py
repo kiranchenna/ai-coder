@@ -17,6 +17,7 @@ extend in later phases (planner, verify loop, memory).
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 
 from langchain_core.messages import (
@@ -25,18 +26,18 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
-from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.text import Text
 
+from core.console import SafeConsole
 from core.model import balanced_json_objects, extract_text_tool_calls, get_chat_model
 from agent.prompts import system_prompt
 from agent.tools import build_tools
 
-console = Console()
+console = SafeConsole()
 
 # Safety cap on tool-call iterations within a single user turn.
 MAX_STEPS = 12
@@ -386,19 +387,14 @@ class AgentSession:
                 "~/.aicoder/config.yaml (e.g. qwen2.5vl:7b) to enable image understanding."
             )
 
-        if cfg.model_provider == "ollama":
-            from core.model import is_model_pulled
+        if _is_lmstudio_endpoint(cfg):
+            from core.model import is_lmstudio_model_downloaded
 
-            if is_model_pulled(cfg.model_base_url, vision_model_name) is False:
-                pulled = _pull_via_ollama(
-                    vision_model_name,
-                    confirm_prompt=f"Vision model [bold]{vision_model_name}[/bold] isn't "
-                    "pulled yet — pull it now? This can take a while depending on your "
-                    "connection.",
+            if is_lmstudio_model_downloaded(vision_model_name) is False:
+                raise RuntimeError(
+                    f"{vision_model_name} isn't downloaded in LM Studio — grab it there, "
+                    "then try again, or pick a different one with /vision model."
                 )
-                if not pulled:
-                    raise RuntimeError(f"{vision_model_name} isn't pulled — can't look at "
-                                        "the image.")
 
         content: list[dict] = [{
             "type": "text",
@@ -408,7 +404,13 @@ class AgentSession:
         for path in image_paths:
             mime = mimetypes.guess_type(path.name)[0] or "image/png"
             encoded = base64.b64encode(path.read_bytes()).decode()
-            content.append({"type": "image_url", "image_url": f"data:{mime};base64,{encoded}"})
+            # image_url must be an object ({"url": ...}), not a bare string —
+            # LM Studio's OpenAI-compatible validation rejects the bare-string
+            # form with a 400. This is the actual OpenAI vision API shape.
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{encoded}"},
+            })
 
         vision_llm = get_chat_model(model=vision_model_name)
         response = vision_llm.invoke([HumanMessage(content=content)])
@@ -542,10 +544,16 @@ class AgentSession:
         return AIMessage(content=accumulated.content, tool_calls=accumulated.tool_calls or [])
 
     def _render_call(self, call: dict) -> None:
+        from rich.markup import escape
+
         name = call.get("name", "?")
         args = call.get("args", {}) or {}
-        preview = ", ".join(f"{k}={_short(v)}" for k, v in args.items())
-        console.print(f"[cyan]→ {name}[/cyan]([dim]{preview}[/dim])")
+        # Escape tool arg values before embedding in a markup string — code
+        # snippets routinely contain `[...]` (list literals, `List[int]`
+        # type hints) that would otherwise be silently swallowed as a
+        # (syntactically valid but meaningless) markup tag rather than shown.
+        preview = ", ".join(f"{k}={escape(_short(v))}" for k, v in args.items())
+        console.print(f"[cyan]→ {escape(str(name))}[/cyan]([dim]{preview}[/dim])")
 
     def reset(self) -> None:
         """Forget the conversation, keeping the system prompt (and saved memory)."""
@@ -709,6 +717,33 @@ def _format_size(num_bytes: int) -> str:
     return f"{size:.1f} TB"
 
 
+_LMSTUDIO_DEFAULT_BASE_URL = "http://localhost:1234/v1"
+
+
+def _is_lmstudio_endpoint(cfg) -> bool:
+    """Whether the active config's base_url matches LM Studio's default
+    local server — model.base_url can still point at any other
+    OpenAI-compatible server (a custom local server, a hosted API), where
+    LM-Studio-specific `lms` CLI shellouts wouldn't apply."""
+    return cfg.model_base_url.rstrip("/") == _LMSTUDIO_DEFAULT_BASE_URL
+
+
+def _try_lmstudio_load(name: str, cfg) -> None:
+    """Best-effort `lms load` — only attempted when the active config
+    actually looks like LM Studio's default endpoint (see
+    _is_lmstudio_endpoint). Silent if it's not a LM Studio-shaped config;
+    surfaced as a warning if it is and the load still fails (almost
+    certainly means `name` isn't downloaded)."""
+    if not _is_lmstudio_endpoint(cfg):
+        return
+    from core.model import switch_lmstudio_model
+
+    try:
+        switch_lmstudio_model(name)
+    except Exception as e:
+        console.print(f"[yellow]⚠ Couldn't load '{name}' in LM Studio.[/yellow] [dim]{e}[/dim]")
+
+
 def _switch_model(name: str, session: "AgentSession") -> None:
     """Switch the active model, persist it as the new default, and rebind tools."""
     from core.config import get_config, save_config
@@ -721,14 +756,11 @@ def _switch_model(name: str, session: "AgentSession") -> None:
     console.print(f"[green]✓ Set model to [bold]{name}[/bold] and saved as your default for "
                   f"new sessions.[/green]")
 
-    # The "is it actually pulled?" check only applies to Ollama — an
-    # openai_compatible endpoint has no equivalent local-pull concept.
-    if cfg.model_provider == "ollama":
-        from core.model import is_model_pulled
-
-        if is_model_pulled(cfg.model_base_url, name) is False:
-            console.print(f"[yellow]⚠ '{name}' may not be pulled yet.[/yellow] "
-                          f"[dim]Run: ollama pull {name}[/dim]")
+    # Explicitly unload the old model and load the new one — this one drives
+    # every turn, so leaving stale models resident (LM Studio has no default
+    # TTL on LLMs, confirmed live) would stack up RAM with every /model
+    # switch in a session.
+    _try_lmstudio_load(name, cfg)
 
 
 def _switch_vision_model(name: str) -> None:
@@ -743,171 +775,37 @@ def _switch_vision_model(name: str) -> None:
     console.print(f"[green]✓ Set vision model to [bold]{name}[/bold] and saved as your "
                   "default.[/green]")
 
-    if cfg.model_provider == "ollama":
-        from core.model import is_model_pulled
+    if _is_lmstudio_endpoint(cfg):
+        # No explicit load here, deliberately — LM Studio auto-loads on first
+        # request (confirmed live: a chat request to an idle-but-downloaded
+        # model loaded it *alongside* the already-loaded coding model, not
+        # instead of it). Pre-loading via _try_lmstudio_load would be wrong
+        # here: that unloads other LLMs first, which would evict the coding
+        # model this vision handoff is supposed to run alongside.
+        from core.model import is_lmstudio_model_downloaded
 
-        if is_model_pulled(cfg.model_base_url, name) is False:
-            console.print(f"[yellow]⚠ '{name}' may not be pulled yet.[/yellow] "
-                          f"[dim]Run: ollama pull {name}[/dim]")
-
-
-def _confirm_and_pull(tag: str, size_bytes: int, session: "AgentSession") -> None:
-    """Pull a not-yet-installed catalog model (with confirmation — it's a real
-    download), then switch to it and persist as the new default. `tag` always
-    comes from our own hardcoded RECOMMENDED_MODELS, never raw user input, so
-    it's safe to interpolate into the shell command directly."""
-    from rich.prompt import Confirm
-    from tools.shell_tools import run_command
-
-    if not Confirm.ask(
-        f"Pull [bold]{tag}[/bold] (~{_format_size(size_bytes)})? This can take a while "
-        "depending on your connection.",
-        default=True,
-    ):
-        console.print("[dim]No change made.[/dim]")
-        return
-
-    console.print(f"[dim]⬇ Pulling {tag} — hang tight, this can take a while for larger "
-                  f"models…[/dim]")
-    _out, err, code = run_command(f"ollama pull {tag}", timeout=7200)
-    if code != 0:
-        console.print(f"[red]✗ Failed to pull {tag} (exit {code}).[/red]"
-                      + (f"\n{err.strip()[-500:]}" if err else ""))
-        return
-    console.print(f"[green]✓ Pulled {tag}.[/green]")
-    _switch_model(tag, session)
-
-
-def _pull_via_ollama(tag: str, *, confirm_prompt: str | None = None) -> bool:
-    """Confirm, then pull an arbitrary Ollama tag — raw user/config input, not
-    our curated RECOMMENDED_MODELS catalog, so this uses subprocess.run with
-    an argv list rather than run_command's shell=True (interpolating
-    untrusted input into a shell string would be an injection risk). Returns
-    whether the pull succeeded (False on decline, failure, or 'ollama' not
-    being on PATH — a message is always printed either way)."""
-    import subprocess
-
-    from rich.prompt import Confirm
-
-    if not Confirm.ask(
-        confirm_prompt or f"Pull [bold]{tag}[/bold] from Ollama? This can take a while "
-        "depending on your connection.",
-        default=True,
-    ):
-        console.print("[dim]No change made.[/dim]")
-        return False
-
-    console.print(f"[dim]⬇ Pulling {tag} — hang tight, this can take a while for larger "
-                  f"models…[/dim]")
-    try:
-        result = subprocess.run(
-            ["ollama", "pull", tag], capture_output=True, text=True, timeout=7200,
-        )
-    except FileNotFoundError:
-        console.print("[red]✗ 'ollama' isn't on your PATH.[/red]")
-        return False
-    except subprocess.TimeoutExpired:
-        console.print(f"[red]✗ Pulling {tag} timed out.[/red]")
-        return False
-    if result.returncode != 0:
-        console.print(f"[red]✗ Failed to pull {tag} (exit {result.returncode}).[/red]"
-                      + (f"\n{result.stderr.strip()[-500:]}" if result.stderr else ""))
-        return False
-    console.print(f"[green]✓ Pulled {tag}.[/green]")
-    return True
-
-
-def _pull_arbitrary_model(tag: str, session: "AgentSession") -> None:
-    """Pull a model tag the user typed themselves — any Ollama model, not just
-    our curated recommendations (see 'Other…' in the /model picker) — then
-    switch to it and persist as the new default."""
-    if _pull_via_ollama(tag):
-        _switch_model(tag, session)
+        if is_lmstudio_model_downloaded(name) is False:
+            console.print(f"[yellow]⚠ '{name}' doesn't look like it's downloaded in LM "
+                          "Studio yet.[/yellow]")
 
 
 def _handle_custom_model_entry(session: "AgentSession") -> None:
-    """'Other…' in the /model picker — any Ollama model not in our curated
-    recommendations (see ollama.com/library for the full catalog)."""
-    from core.config import get_config
-
-    name = Prompt.ask("Model name (e.g. llama3.2:1b — see ollama.com/library)",
-                       default="").strip()
+    """'Other…' in the /model picker — an exact model id already downloaded
+    in LM Studio (no pull flow — see switch_lmstudio_model's docstring)."""
+    name = Prompt.ask("Model id (see `lms ls` for exact ids)", default="").strip()
     if not name:
         console.print("[dim]No change made.[/dim]")
         return
-
-    cfg = get_config()
-    if cfg.model_provider == "ollama":
-        from core.model import is_model_pulled
-
-        if is_model_pulled(cfg.model_base_url, name) is False:
-            _pull_arbitrary_model(name, session)
-            return
     _switch_model(name, session)
 
 
-def _build_model_menu(current_name: str, installed: list[dict], catalog: list) -> list[dict]:
-    """Merge installed models with not-yet-installed catalog recommendations
-    into one ordered, section-labeled list for a model picker. Shared by
-    `/model` (catalog=RECOMMENDED_MODELS) and `/vision model`
-    (catalog=VISION_MODELS) — the two-model-family split is a real
-    architectural fact of Ollama's local ecosystem, not just a naming choice,
-    so these stay two distinct catalogs rather than one filtered list."""
-    from core.model_catalog import TIER_LABELS, TIER_ORDER
-
-    installed_names = {m["name"] for m in installed}
-    entries = [
-        {"tag": m["name"], "size_bytes": m["size"], "installed": True,
-         "current": m["name"] == current_name, "note": None, "section": "Installed"}
+def _build_model_menu(current_name: str, installed: list[dict]) -> list[dict]:
+    """Installed models as picker entries, marked against the active model.
+    Shared by /model and /vision model."""
+    return [
+        {"tag": m["name"], "size_bytes": m["size"], "current": m["name"] == current_name}
         for m in installed
     ]
-    for tier in TIER_ORDER:
-        for spec in catalog:
-            if spec.tier != tier or spec.tag in installed_names:
-                continue  # already installed — don't recommend it a second time
-            entries.append({
-                "tag": spec.tag, "size_bytes": int(spec.size_gb * 1024 ** 3),
-                "installed": False, "current": False, "note": spec.note,
-                "section": f"Recommended — {TIER_LABELS[tier]}",
-            })
-    return entries
-
-
-def _exclude_embedding_model(installed: list[dict], cfg) -> list[dict]:
-    """Drop the configured embedding model from a picker's installed list —
-    it's an embeddings-only model, never usable for chat or vision, but
-    Ollama's /api/tags has no way to distinguish it from a chat-capable one.
-    Used by both /model and /vision model."""
-    embedding_model = (cfg.get("knowledge", "embedding_model", default="") or "").strip()
-    if not embedding_model:
-        return installed
-    return [m for m in installed if m["name"] != embedding_model]
-
-
-def _filter_vision_capable(installed: list[dict], cfg) -> list[dict]:
-    """Keep only installed models that plausibly look vision-capable, for
-    /vision model's "Installed" section: a base tag matching a known
-    VISION_MODELS family, or whatever's already configured as vision.model
-    (so a custom choice set directly in config.yaml still shows correctly as
-    installed even if its family isn't in our curated list). A text coding
-    model you happen to have pulled shouldn't show up here just because it's
-    installed — "Other…" still covers anything not listed here."""
-    from core.model_catalog import VISION_MODELS
-
-    known_bases = {spec.tag.split(":")[0].lower() for spec in VISION_MODELS}
-    current = cfg.vision_model
-    return [
-        m for m in installed
-        if m["name"].split(":")[0].lower() in known_bases or m["name"] == current
-    ]
-
-
-def _model_menu_entries(cfg, installed: list[dict]) -> list[dict]:
-    """`/model`'s entries: installed + RECOMMENDED_MODELS, marked against the
-    active coding model."""
-    from core.model_catalog import RECOMMENDED_MODELS
-
-    return _build_model_menu(cfg.model_name, installed, RECOMMENDED_MODELS)
 
 
 def _model_menu_label(e: dict) -> str:
@@ -916,35 +814,26 @@ def _model_menu_label(e: dict) -> str:
     Rich panel below has its own column-aligned formatting and doesn't share
     this — kept separate to avoid touching its already-tested rendering."""
     check = "[green]✓[/green] " if e["current"] else "  "
-    pulled = " [dim]· not pulled[/dim]" if not e["installed"] else ""
-    note = f" [dim]— {e['note']}[/dim]" if e["note"] else ""
-    return f"{check}{e['tag']} [dim]({_format_size(e['size_bytes'])})[/dim]{pulled}{note}"
+    return f"{check}{e['tag']} [dim]({_format_size(e['size_bytes'])})[/dim]"
 
 
-def _render_model_menu(entries: list[dict], title: str = "[cyan]Available models (via Ollama)[/cyan]") -> None:
+def _render_model_menu(entries: list[dict], title: str) -> None:
     lines: list[str] = []
-    last_section = None
     for i, e in enumerate(entries, 1):
-        if e["section"] != last_section:
-            if last_section is not None:
-                lines.append("")
-            lines.append(f"[bold]{e['section']}[/bold]")
-            last_section = e["section"]
         marker = " [dim](current)[/dim]" if e["current"] else ""
-        pulled_tag = "" if e["installed"] else " [dim]· not pulled[/dim]"
-        note = f"  [dim]{e['note']}[/dim]" if e["note"] else ""
-        lines.append(f"  [cyan]{i:>2}[/cyan]  {e['tag']:<24} {_format_size(e['size_bytes']):>8}"
-                     f"{marker}{pulled_tag}{note}")
+        lines.append(f"  [cyan]{i:>2}[/cyan]  {e['tag']:<24} {_format_size(e['size_bytes']):>8}{marker}")
     console.print(Panel("\n".join(lines), title=title, border_style="cyan"))
 
 
-def _run_model_picker(picker_title: str, entries: list[dict], current_name: str) -> int | None:
+def _run_model_picker(
+    picker_title: str, entries: list[dict], current_name: str,
+    other_label: str = "Other… (type an exact LM Studio model id)",
+    menu_title: str = "[cyan]Available models (via LM Studio)[/cyan]",
+) -> int | None:
     """The shared arrow-key (TUI) or numbered (plain-REPL) model picker over
     `entries` (see _build_model_menu). Returns the chosen index, len(entries)
     for "Other…", or None if cancelled/kept as-is. Shared by /model and
     /vision model."""
-    other_label = "Other… (type any Ollama model name)"
-
     try:
         from agent.tui import ask_choice, is_tui_active
         tui_active = is_tui_active()
@@ -952,14 +841,10 @@ def _run_model_picker(picker_title: str, entries: list[dict], current_name: str)
         tui_active = False
 
     if tui_active:
-        # The richer, arrow-key-navigable version of the same picker: grouped
-        # by section (Installed / Recommended — tier, like the plain-REPL
-        # panel below), opening with the current model already highlighted.
         current_idx = next((i for i, e in enumerate(entries) if e["current"]), 0)
         idx = ask_choice(
             picker_title,
             [_model_menu_label(e) for e in entries] + [other_label],
-            groups=[e["section"] for e in entries] + ["Other"],
             initial_index=current_idx,
         )
         if idx is None:
@@ -967,7 +852,7 @@ def _run_model_picker(picker_title: str, entries: list[dict], current_name: str)
             return None
         return idx
 
-    _render_model_menu(entries)
+    _render_model_menu(entries, menu_title)
     choice = Prompt.ask(
         f"Select a model [1-{len(entries)}, 'o' for another model, Enter to keep current]",
         default="",
@@ -983,30 +868,31 @@ def _run_model_picker(picker_title: str, entries: list[dict], current_name: str)
     return None
 
 
-def _handle_non_ollama_model_command(cfg) -> None:
-    """`/model` (no arg) for the openai_compatible provider — there's no
-    Ollama-style discovery API for an arbitrary server/hosted endpoint, so
-    just show what's active and how to change it."""
+def _handle_model_unreachable(cfg) -> None:
+    """`/model` (no arg) when LM Studio can't be reached — show what's
+    active and how to change it."""
     console.print(Panel(
-        f"[dim]Provider:[/dim] {cfg.model_provider}\n"
         f"[dim]Model:[/dim]    {cfg.model_name}\n"
         f"[dim]Endpoint:[/dim] {cfg.model_base_url}\n\n"
-        "[dim]Use [/dim][bold]/model <name>[/bold][dim] to switch to a different model id on "
-        "this same endpoint, or edit [/dim][bold]~/.aicoder/config.yaml[/bold][dim] to point at "
-        "a different server/API entirely (model.base_url, model.api_key).[/dim]",
+        "[yellow]⚠ Couldn't reach LM Studio to list models.[/yellow]\n"
+        "[dim]Make sure its local server is running (Developer tab → Start Server), or "
+        "switch directly: [/dim][bold]/model <name>[/bold]",
         title="[cyan]Current model[/cyan]",
         border_style="cyan",
     ))
 
 
 def _handle_model_command(arg: str, session: "AgentSession") -> None:
-    """`/model` — for the default Ollama provider: pick a model interactively
-    (installed models plus curated, not-yet-installed recommendations by
-    hardware/preference tier), or switch straight to `/model <name>`. Mirrors
-    the Claude Code `/model` picker: select one and it becomes your default
-    for new sessions, not just this one. For the openai_compatible provider
-    (a custom server or hosted API), there's no discovery API to pick from —
-    see `_handle_non_ollama_model_command`."""
+    """`/model` — pick a model interactively, or switch straight to
+    `/model <name>`. Mirrors the Claude Code `/model` picker: select one and
+    it becomes your default for new sessions, not just this one.
+
+    Lists every model already downloaded in LM Studio (via the `lms` CLI) —
+    no pull flow, grabbing a new model stays a manual step in LM Studio
+    itself (its own `lms get` proved too unreliable this session — bad
+    slug/casing resolution, hangs on interactive prompts — to build an
+    auto-download flow on top of). Falls back to a status panel if LM Studio
+    can't be reached at all."""
     from core.config import get_config
 
     cfg = get_config()
@@ -1014,38 +900,31 @@ def _handle_model_command(arg: str, session: "AgentSession") -> None:
         _switch_model(arg, session)
         return
 
-    if cfg.model_provider != "ollama":
-        _handle_non_ollama_model_command(cfg)
+    if not _is_lmstudio_endpoint(cfg):
+        _handle_model_unreachable(cfg)
         return
 
-    from core.model import list_ollama_models
+    from core.model import list_lmstudio_models
 
     try:
-        installed = _exclude_embedding_model(list_ollama_models(cfg.model_base_url), cfg)
+        installed = list_lmstudio_models()
     except Exception:
-        console.print(
-            "[yellow]⚠ Couldn't reach Ollama to list models.[/yellow]\n"
-            f"[dim]Make sure it's running (`ollama serve`), or switch directly: "
-            f"/model <name>. Current: {cfg.model_name}[/dim]"
-        )
+        _handle_model_unreachable(cfg)
+        return
+    if not installed:
+        console.print("[yellow]No models downloaded in LM Studio yet.[/yellow] "
+                      "[dim]Grab one in LM Studio's own model search, then try /model "
+                      "again.[/dim]")
         return
 
-    # Our curated RECOMMENDED_MODELS is a hand-picked subset — Ollama has no
-    # API to browse its full library, so /vision model's picker (and this
-    # one) always ends with an "Other…" escape hatch for anything not in it.
-    entries = _model_menu_entries(cfg, installed)
+    entries = _build_model_menu(cfg.model_name, installed)
     idx = _run_model_picker("Select a model", entries, cfg.model_name)
     if idx is None:
         return
     if idx == len(entries):
         _handle_custom_model_entry(session)
         return
-
-    entry = entries[idx]
-    if entry["installed"]:
-        _switch_model(entry["tag"], session)
-    else:
-        _confirm_and_pull(entry["tag"], entry["size_bytes"], session)
+    _switch_model(entries[idx]["tag"], session)
 
 
 # ── /vision — attach an image by file path (the two-model vision handoff) ──────
@@ -1054,11 +933,12 @@ def _handle_model_command(arg: str, session: "AgentSession") -> None:
 
 def _handle_vision_model_command(arg: str = "") -> None:
     """`/vision model` — pick the vision-capable model interactively, mirroring
-    `/model`'s picker exactly (same shared entries builder and picker
-    dispatch) but sourced from VISION_MODELS and persisting to vision.model,
-    not model.name — the coding model that's actually driving the session is
-    untouched. `/vision model <name>` switches straight to <name>, same as
-    `/model <name>` does for the coding model."""
+    `/model`'s picker but persisting to vision.model, not model.name — the
+    coding model actually driving the session is untouched. `/vision model
+    <name>` switches straight to <name>, same as `/model <name>` does for
+    the coding model. Downloaded models filtered to vision-capable ones only
+    (see list_lmstudio_models' vision flag), no pull flow — same reasoning
+    as /model."""
     if arg:
         _switch_vision_model(arg)
         return
@@ -1066,58 +946,50 @@ def _handle_vision_model_command(arg: str = "") -> None:
     from core.config import get_config
 
     cfg = get_config()
-    if cfg.model_provider != "ollama":
+    if not _is_lmstudio_endpoint(cfg):
         console.print(
-            "[yellow]The vision model picker only supports discovering models via "
-            "Ollama.[/yellow] [dim]Set vision.model directly in config.yaml for a custom "
-            f"endpoint. Current: {cfg.vision_model or '(not set)'}[/dim]"
-        )
-        return
-
-    from core.model import is_model_pulled, list_ollama_models
-
-    try:
-        installed = _filter_vision_capable(list_ollama_models(cfg.model_base_url), cfg)
-    except Exception:
-        console.print(
-            "[yellow]⚠ Couldn't reach Ollama to list models.[/yellow]\n"
-            "[dim]Make sure it's running (`ollama serve`), or set vision.model directly in "
+            "[yellow]⚠ Couldn't reach LM Studio to list models.[/yellow]\n"
+            "[dim]Make sure its local server is running, or set vision.model directly in "
             f"config.yaml. Current: {cfg.vision_model or '(not set)'}[/dim]"
         )
         return
 
-    from core.model_catalog import VISION_MODELS
+    from core.model import list_lmstudio_models
 
-    entries = _build_model_menu(cfg.vision_model, installed, VISION_MODELS)
+    try:
+        installed = list_lmstudio_models(vision_only=True)
+    except Exception:
+        console.print(
+            "[yellow]⚠ Couldn't reach LM Studio to list models.[/yellow]\n"
+            "[dim]Make sure its local server is running, or set vision.model directly in "
+            f"config.yaml. Current: {cfg.vision_model or '(not set)'}[/dim]"
+        )
+        return
+    if not installed:
+        console.print(
+            "[yellow]No vision-capable models downloaded in LM Studio yet.[/yellow] "
+            "[dim]Grab one (e.g. a Qwen-VL/InternVL build) in LM Studio's own model "
+            "search, then try /vision model again.[/dim]"
+        )
+        return
+
+    entries = _build_model_menu(cfg.vision_model, installed)
     idx = _run_model_picker(
         "Select a vision model", entries, cfg.vision_model or "(not set)",
+        menu_title="[cyan]Available vision models (via LM Studio)[/cyan]",
     )
     if idx is None:
         return
 
     if idx == len(entries):
-        name = Prompt.ask(
-            "Vision model name (e.g. qwen2.5vl:7b — see ollama.com/library)", default="",
-        ).strip()
+        name = Prompt.ask("Vision model id (see `lms ls`)", default="").strip()
         if not name:
             console.print("[dim]No change made.[/dim]")
-            return
-        if is_model_pulled(cfg.model_base_url, name) is False and not _pull_via_ollama(name):
             return
         _switch_vision_model(name)
         return
 
-    entry = entries[idx]
-    if entry["installed"]:
-        _switch_vision_model(entry["tag"])
-        return
-    if _pull_via_ollama(
-        entry["tag"],
-        confirm_prompt=f"Pull [bold]{entry['tag']}[/bold] "
-        f"(~{_format_size(entry['size_bytes'])})? This can take a while depending on your "
-        "connection.",
-    ):
-        _switch_vision_model(entry["tag"])
+    _switch_vision_model(entries[idx]["tag"])
 
 
 def _handle_vision_command(arg: str, session: "AgentSession") -> None:
@@ -1192,6 +1064,8 @@ def _handle_history_command(arg: str, session: "AgentSession", workspace: Path) 
 def _render_session_list(files: list[Path], session: "AgentSession") -> None:
     import json
 
+    from rich.markup import escape
+
     lines = []
     for i, path in enumerate(files, 1):
         try:
@@ -1207,8 +1081,12 @@ def _render_session_list(files: list[Path], session: "AgentSession") -> None:
         started = data.get("started_at", "")[:16].replace("T", " ")
         detail = f"{len(turns)} turn(s)"
         if touched:
-            detail += f" · files: {', '.join(touched)}"
-        lines.append(f"[cyan]{i:>2}.[/cyan] {started}  [bold]{_short(first_prompt, 50)}[/bold]"
+            # A stored prompt/path is arbitrary past user text — escape before
+            # embedding, or a message like "check the [foo] case" silently
+            # loses "[foo]" (a syntactically valid, if meaningless, markup
+            # tag doesn't raise, it just consumes the bracketed text).
+            detail += f" · files: {', '.join(escape(p) for p in touched)}"
+        lines.append(f"[cyan]{i:>2}.[/cyan] {started}  [bold]{escape(_short(first_prompt, 50))}[/bold]"
                      f"{marker}\n      [dim]{detail}[/dim]")
 
     console.print(Panel("\n\n".join(lines), title="[cyan]Past sessions[/cyan]", border_style="cyan"))
@@ -1218,32 +1096,33 @@ def _render_session_list(files: list[Path], session: "AgentSession") -> None:
 def _render_session_detail(path: Path) -> None:
     import json
 
+    from rich.markup import escape
     from rich.syntax import Syntax
 
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception as e:  # noqa: BLE001 — surface a clean message, not a traceback
-        console.print(f"[red]⚠ Couldn't read that session: {e}[/red]")
+        console.print(f"[red]⚠ Couldn't read that session: {escape(str(e))}[/red]")
         return
 
     console.print(Panel.fit(
-        f"[dim]Workspace:[/dim] {data.get('workspace', '')}\n"
-        f"[dim]Started:[/dim]   {data.get('started_at', '')}",
-        title=f"[cyan]Session {data.get('session_id', '')}[/cyan]",
+        f"[dim]Workspace:[/dim] {escape(str(data.get('workspace', '')))}\n"
+        f"[dim]Started:[/dim]   {escape(str(data.get('started_at', '')))}",
+        title=f"[cyan]Session {escape(str(data.get('session_id', '')))}[/cyan]",
         border_style="cyan",
     ))
     for i, turn in enumerate(data.get("turns", []), 1):
         console.print(f"\n[bold cyan]── Turn {i} ──[/bold cyan]")
-        console.print(f"[bold green]> {turn['prompt']}[/bold green]")
+        console.print(f"[bold green]> {escape(turn['prompt'])}[/bold green]")
         for action in turn.get("actions", []):
             preview = ", ".join(
-                f"{k}={_short(v, 40)}" for k, v in (action.get("args") or {}).items()
+                f"{k}={escape(_short(v, 40))}" for k, v in (action.get("args") or {}).items()
             )
-            console.print(f"[cyan]→ {action['tool']}[/cyan]([dim]{preview}[/dim])")
+            console.print(f"[cyan]→ {escape(str(action['tool']))}[/cyan]([dim]{preview}[/dim])")
             for d in action.get("diffs", []):
                 console.print(Syntax(d["diff"], "diff", theme="monokai", word_wrap=True))
         if turn.get("answer"):
-            console.print(f"\n{turn['answer']}")
+            console.print(f"\n{turn['answer']}", markup=False)
         else:
             console.print("[dim](no answer — interrupted or hit the step limit)[/dim]")
 
@@ -1415,7 +1294,7 @@ def _handle_bug_command() -> None:
         "File a bug at: [bold]https://github.com/kiranchenna/ai-coder/issues/new[/bold]\n\n"
         "Please include:\n"
         "  • [dim]aicoder --version[/dim] and [dim]aicoder --config[/dim] output\n"
-        "  • Your OS, Ollama version, and the model in use\n"
+        "  • Your OS, LM Studio version, and the model in use\n"
         "  • The exact command/prompt and the full error or unexpected output\n"
         "  • Whether [dim]aicoder --selftest[/dim] passes",
         title="[cyan]Report a bug[/cyan]", border_style="cyan",
@@ -1616,7 +1495,15 @@ def _handle_command(raw: str, session: "AgentSession", workspace: Path) -> bool:
 
         out, err, code = run_command("git diff HEAD", cwd=workspace, stream_output=False)
         if code != 0:
-            console.print(f"[yellow]Not a git repo, or git error: {(err or out).strip()}[/yellow]")
+            # Outside a repo, git treats "HEAD" as a --no-index path arg and
+            # dumps its full flag reference (exit 129) instead of a clean
+            # "not a repo" message — confirmed live. Special-case it so the
+            # user sees one line, not a wall of git usage text.
+            detail = (err or out).strip()
+            if "not a git repository" in detail.lower():
+                console.print("[yellow]Not a git repo.[/yellow]")
+            else:
+                console.print(f"[yellow]git error: {detail}[/yellow]")
         elif not out.strip():
             console.print("[dim]No changes vs HEAD.[/dim]")
         else:
@@ -1756,6 +1643,7 @@ def run_agent_repl(workspace: Path, continue_session: bool = False) -> None:
             if not user:
                 continue
 
+            start = time.monotonic()
             try:
                 if user.startswith("/"):
                     if _handle_command(user, session, workspace):
@@ -1767,6 +1655,11 @@ def run_agent_repl(workspace: Path, continue_session: bool = False) -> None:
                 console.print("\n[yellow]Interrupted — back to the prompt.[/yellow]")
             except Exception as e:  # noqa: BLE001 — keep the REPL alive on any failure
                 console.print(f"\n[red]⚠ Error: {e}[/red]")
-                console.print("[dim]If the model is unreachable, check that Ollama is running.[/dim]")
+                console.print("[dim]If the model is unreachable, check that LM Studio's local "
+                              "server is running (Developer tab → Start Server).[/dim]")
+            finally:
+                # finally, not after the try block — must still run (and time)
+                # a slash command that `continue`s or `break`s out above.
+                console.print(f"[dim]⏱ {time.monotonic() - start:.1f}s[/dim]")
 
         session.mcp.shutdown()

@@ -16,9 +16,9 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"          # installs pytest + ruff
 ```
 
-You'll also need [Ollama](https://ollama.com/) running locally with a pulled
-model to exercise anything that actually calls the LLM — but the test suite
-itself does **not** require Ollama (model calls are mocked/injected).
+You'll also need [LM Studio](https://lmstudio.ai/) running locally with a
+model loaded to exercise anything that actually calls the LLM — but the test
+suite itself does **not** require LM Studio (model calls are mocked/injected).
 
 ## Before opening a PR
 
@@ -59,7 +59,7 @@ small changes. See `git log` for the house style.
 ## Reporting bugs
 
 Open an issue with:
-- Your OS, Ollama version, and the model you're using
+- Your OS, LM Studio version, and the model you're using
 - The exact command/prompt and the full error or unexpected output
 - Whether `aicoder --selftest` passes
 

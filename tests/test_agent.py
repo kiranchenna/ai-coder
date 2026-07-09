@@ -319,7 +319,7 @@ def test_compaction_noop_under_budget():
 def test_compaction_summarizes_old_keeps_recent(monkeypatch):
     from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 
-    # force the summary model call into its fallback (no Ollama needed)
+    # force the summary model call into its fallback (no real model needed)
     def boom(*a, **k):
         raise RuntimeError("no model in test")
     monkeypatch.setattr("agent.loop.get_chat_model", boom)

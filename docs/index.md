@@ -1,6 +1,6 @@
 # AICoder — Documentation Index
 
-AICoder v3 — a local, offline **agentic coding assistant** (Ollama, no cloud, no
+AICoder v3 — a local, offline **agentic coding assistant** (LM Studio, no cloud, no
 API keys). It plans, reads and edits real code, runs commands and tests,
 researches the web, and remembers your project — all on your machine.
 

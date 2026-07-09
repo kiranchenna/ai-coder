@@ -10,9 +10,9 @@ from __future__ import annotations
 import re
 import httpx
 from bs4 import BeautifulSoup
-from rich.console import Console
+from core.console import SafeConsole
 
-console = Console()
+console = SafeConsole()
 
 
 # ─── Search ───────────────────────────────────────────────────────────────────

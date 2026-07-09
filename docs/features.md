@@ -64,7 +64,7 @@ commands are handled by the REPL (`agent/loop.py`):
 | `/plan <goal>` | Decompose a goal into an ordered, resumable task list and build it |
 | `/resume` | Continue an in-progress plan |
 | `/init` | Have the agent explore the codebase and write/update `AICODER.md` (mirrors Claude Code's `/init`); reloads the system prompt so it takes effect immediately, no restart needed |
-| `/model [name]` | **Ollama provider (default):** `/model` alone opens an interactive picker: your pulled models (current marked) plus curated, not-yet-pulled recommendations grouped by fast/balanced/powerful tier — pick one to pull (with confirmation) and switch. `/model <name>` switches straight to a name you know. Either way the choice is persisted to `config.yaml` as the new default (mirrors Claude Code's `/model`). **Other providers:** `/model` shows the current provider/model/endpoint instead (no discovery API to pick from); `/model <name>` still switches the model id |
+| `/model [name]` | **LM Studio (default):** `/model` alone opens an interactive picker of every model already downloaded in LM Studio (current marked) — pick one to switch. `/model <name>` switches straight to an id you know (see `lms ls`). Either way the choice is persisted to `config.yaml` as the new default (mirrors Claude Code's `/model`). **Other endpoints:** `/model` shows the current model/endpoint instead (no discovery API to pick from); `/model <name>` still switches the model id |
 | `/status` | Workspace, model, provider, and Developer Mode profile — the startup banner's content, on demand |
 | `/context` | Conversation size vs. the auto-compaction budget, as a percentage |
 | `/compact` | Force the same summarize-older-turns compaction `AgentSession` runs automatically, right now |
@@ -116,28 +116,25 @@ makes the *existing* code work inside it unchanged:
   the lifetime of the session — the same technique this project's own test
   suite already uses, just applied at runtime — to route through a Textual
   modal instead. Every existing confirmation across the app (shell/file
-  writes, the Ollama install offer, the devmode discuss loop, ...) becomes
-  TUI-native with zero changes to any of those call sites.
+  writes, the devmode discuss loop, ...) becomes TUI-native with zero changes
+  to any of those call sites.
 - The `/model` picker additionally gets a genuine arrow-key `OptionList` (via
-  `ask_choice`/`is_tui_active`), on top of the generic bridge above — grouped
-  under section headers (Installed / Recommended — tier, skippable by arrow
-  keys, not selectable) matching the plain-REPL panel's own grouping, opening
-  with the current model already highlighted and checkmarked (✓) rather than
-  always starting at the top — the same picker style Claude Code uses. An
-  "Other… (type any Ollama model name)" entry at the end covers anything
-  beyond the curated recommendations (Ollama has no API to browse its full
-  library, so this list is a hand-picked subset, not everything available) —
-  picking it prompts for a model tag, then pulls it (with confirmation) if
-  not already installed, or switches straight to it if it is. Also reachable
-  directly without the picker at all: `/model <name>` always works, and
-  warns rather than silently failing if that name isn't pulled yet.
+  `ask_choice`/`is_tui_active`), on top of the generic bridge above — listing
+  every model already downloaded in LM Studio, opening with the current model
+  already highlighted and checkmarked (✓) rather than always starting at the
+  top — the same picker style Claude Code uses. An "Other… (type an exact LM
+  Studio model id)" entry at the end covers anything not currently downloaded
+  or shown by `lms ls` for another reason — picking it prompts for a model
+  id, then switches straight to it (LM Studio's own JIT loading brings it up
+  on first use). Also reachable directly without the picker at all:
+  `/model <name>` always works.
 - Blocking business logic (`AgentSession.send`) runs in a Textual worker
   thread so the UI stays responsive; a real interrupt mechanism
   (`AgentSession.request_interrupt`, checked between streamed chunks and
   between tool-call steps) backs the status bar's "esc to interrupt" —
   best-effort, since a chunk already arriving over the network still has to
-  land first, and how finely Ollama batches tokens per chunk isn't something
-  AICoder controls.
+  land first, and how finely the model server batches tokens per chunk isn't
+  something AICoder controls.
 
 **"/" autocomplete.** Typing `/` opens a dropdown of every slash command
 (name + one-line description, from `SLASH_COMMANDS` in `agent/loop.py`),
@@ -149,9 +146,9 @@ single Enter runs it — otherwise `AutoComplete`'s own Enter handling would
 requiring two Enters. Built on the `textual-autocomplete` package.
 
 **Vision: paste a screenshot with Ctrl+V.** Claude's model is natively
-multimodal; Ollama's local ecosystem splits vision and coding into separate
-model families, so this is a two-model handoff rather than one model seeing
-the image directly:
+multimodal; LM Studio's local model ecosystem splits vision and coding into
+separate model families, so this is a two-model handoff rather than one model
+seeing the image directly:
 - `ChatInput.action_paste` (a small `Input` subclass) checks the *real* OS
   clipboard for an image via Pillow's `ImageGrab.grabclipboard()` — confirmed
   independently (via `osascript` setting the clipboard, then a real pty
@@ -165,14 +162,16 @@ the image directly:
   pending_images`); a stray slash command never consumes a pending
   attachment, only a real message submission does.
 - `AgentSession.describe_images`/`send_with_images` do the handoff: a
-  vision-capable model (`vision.model` in config, default `qwen2.5vl:7b`,
-  pulled on first use with confirmation) looks at the image and describes it
-  in text (via a multimodal `HumanMessage`, base64-encoded image content) —
-  built fresh through `get_chat_model(model=...)`, never bound to the
-  session's tools and never persisted as the default driver, unlike `/model`.
-  That description is folded into a normal text turn for the regular coding
-  model, so the rest of the agentic loop (tool calling, editing) is
-  completely unchanged from a plain turn.
+  vision-capable model (`vision.model` in config, empty/disabled by default
+  until one is downloaded in LM Studio and configured, e.g. via `/vision
+  model`) looks at the image and describes it in text (via a multimodal
+  `HumanMessage`, base64-encoded image content, nested `image_url` object per
+  LM Studio's stricter validation) — built fresh through
+  `get_chat_model(model=...)`, never bound to the session's tools and never
+  persisted as the default driver, unlike `/model`. That description is
+  folded into a normal text turn for the regular coding model, so the rest of
+  the agentic loop (tool calling, editing) is completely unchanged from a
+  plain turn.
 - `/vision <path>` is the file-path equivalent, usable in both front-ends
   (deliberately *not* the sandboxed `resolve()` used by `read_file`/
   `write_file` — screenshots typically live outside the workspace, e.g. the
@@ -180,23 +179,18 @@ the image directly:
   anything).
 - `/vision model` picks the vision-capable model interactively — the exact
   same picker `/model` uses (`_build_model_menu`/`_run_model_picker`, shared
-  rather than duplicated: grouped sections, current model pre-highlighted,
-  "Other…" escape hatch), just sourced from a separate `VISION_MODELS`
-  catalog (`core/model_catalog.py`) and persisting to `vision.model` instead
-  of `model.name`. `/vision model <name>` switches straight to `<name>`, same
-  shape as `/model <name>`. The two catalogs stay genuinely separate lists
-  (not one filtered by "supports vision") since Ollama's vision and coding
-  models are different model families, not a flag on one family.
+  rather than duplicated: current model pre-highlighted, "Other…" escape
+  hatch), filtered to models LM Studio reports as vision-capable (`lms ls
+  --json`'s `vision` flag) and persisting to `vision.model` instead of
+  `model.name`. `/vision model <name>` switches straight to `<name>`, same
+  shape as `/model <name>`.
 
-**Model pickers filter obviously-wrong-category installed models.** Ollama's
-`/api/tags` lists every locally-pulled model with no way to tell an
-embedding-only model or a vision model from a coding model apart. `/model`
-excludes the configured `knowledge.embedding_model` from its "Installed"
-section (it's never usable for chat); `/vision model` goes further and only
-lists installed models matching a known `VISION_MODELS` family (or whatever's
-already configured as `vision.model`) — a coding model you happen to have
-pulled won't show up there just because it's installed. "Other…" still
-covers anything not listed in either picker.
+**Model pickers filter obviously-wrong-category downloaded models.** `/model`
+excludes the configured `knowledge.embedding_model` from its list (it's never
+usable for chat); `/vision model` only lists models LM Studio itself reports
+as vision-capable — a coding model you happen to have downloaded won't show
+up there just because it's present. "Other…" still covers anything not
+listed in either picker.
 
 ---
 
@@ -366,7 +360,7 @@ single reflected pass (a same-strength self-judge added latency without quality)
 
 ### RAG knowledge base (`rag/store.py`, `rag/ingest.py`)
 - **Storage:** ChromaDB at `~/.aicoder/rag/chroma/`.
-- **Embeddings:** Ollama `nomic-embed-text` (configurable; `""` = use the chat model).
+- **Embeddings:** LM Studio `text-embedding-nomic-embed-text-v1.5` (configurable; `""` = use the chat model).
 - **Chunking:** real overlapping chunks (≈1200 chars, 150 overlap).
 - **Relevance cutoff:** cosine-distance threshold so unrelated queries return
   nothing instead of the nearest irrelevant chunk.
@@ -396,18 +390,19 @@ single reflected pass (a same-strength self-judge added latency without quality)
   name. Commands get a JSON payload on stdin + `AICODER_*` env vars. Opt-in.
 
 ### Model providers (`core/model.py`)
-- Ollama is the default provider and needs no configuration beyond the
-  Requirements above. Set `model.provider: openai_compatible` in config.yaml
-  to instead point at any local server (llama.cpp server, vLLM, LM Studio,
-  text-generation-webui, LocalAI) or hosted API (OpenAI, OpenRouter, Groq,
-  Together, ...) that speaks the OpenAI chat-completions protocol — pick
-  whatever fits your hardware or preference. Set `model.base_url`,
-  `model.name`, and optionally `model.api_key` (blank for local servers that
-  don't check it). Requires `pip install "ai-coder[openai]"`; a missing
-  package raises a clean, actionable error rather than a traceback.
-  Ollama-specific behavior (the startup install-offer/reachability checks,
-  the rich `/model` picker) only runs for the `ollama` provider. RAG's
-  embedding model always goes through Ollama regardless of this setting.
+- LM Studio is the default and needs no configuration beyond the Requirements
+  above. Under the hood it's always the OpenAI chat-completions protocol
+  (`model.provider: openai_compatible`, kept as an explicit field), so
+  pointing `model.base_url` elsewhere works with any local server (llama.cpp
+  server, vLLM, text-generation-webui, LocalAI) or hosted API (OpenAI,
+  OpenRouter, Groq, Together, ...) that speaks it — pick whatever fits your
+  hardware or preference. Set `model.base_url`, `model.name`, and optionally
+  `model.api_key` (blank for local servers that don't check it).
+  LM-Studio-specific behavior (the rich `/model`/`/vision model` pickers, the
+  `lms` shellouts for load/unload) only runs when `base_url` matches LM
+  Studio's default (`http://localhost:1234/v1`) — a different `base_url`
+  falls back to a generic model/endpoint display, with `/model <name>` still
+  switching the model id.
 
 ### MCP servers (`agent/mcp_client.py`)
 - Optional [Model Context Protocol](https://modelcontextprotocol.io/) client.

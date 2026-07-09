@@ -50,7 +50,7 @@ left the clean draft intact. Keeps `build_review` on in `balanced`.
 
 ## Usage
 
-Needs Ollama running and the model pulled (same setup as `aicoder`).
+Needs LM Studio running with the model loaded (same setup as `aicoder`).
 
 ```bash
 # 1. Lever ablation — baseline vs full stack, on the whatsapp/security fixture

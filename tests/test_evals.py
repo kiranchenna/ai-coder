@@ -13,6 +13,7 @@ from evals.rubric import (
 )
 from evals.run_eval import _ALL_OFF, LEVER_CONFIGS, resolve_levers
 from evals.fixtures import EVAL_IDEAS, get_idea
+from evals.benchmark_backends import parse_lmstudio_stream, parse_ollama_stream
 
 _SPEC = PHASES_BY_ID["security"]
 
@@ -263,3 +264,62 @@ def test_br_evaluate_and_metrics_with_perfect_reviewer():
     m = br_metrics(results)
     assert m["fix_rate"] == 1.0
     assert m["preservation_rate"] == 1.0
+
+
+# ── evals/benchmark_backends.py — Ollama vs LM Studio (pure stream parsing) ────
+
+def test_parse_ollama_stream_computes_ttft_and_tokens_per_sec():
+    import json
+
+    lines = [
+        (json.dumps({"message": {"content": "Hello"}, "done": False}), 1.0),
+        (json.dumps({"message": {"content": " world"}, "done": False}), 1.5),
+        (json.dumps({
+            "message": {"content": ""}, "done": True,
+            "eval_count": 10, "eval_duration": 2_000_000_000,
+        }), 3.0),
+    ]
+    result = parse_ollama_stream(lines, start_time=0.5, prompt="hi")
+    assert result.backend == "ollama"
+    assert result.ttft_s == 0.5
+    assert result.total_s == 2.5
+    assert result.output_tokens == 10
+    assert result.tokens_per_sec_native == 5.0          # 10 tok / 2.0s eval_duration
+    assert result.tokens_per_sec_wall == 5.0             # 10 tok / (2.5 - 0.5)s decode
+
+
+def test_parse_ollama_stream_without_done_chunk_raises():
+    import json
+
+    import pytest
+
+    lines = [(json.dumps({"message": {"content": "Hello"}, "done": False}), 1.0)]
+    with pytest.raises(RuntimeError):
+        parse_ollama_stream(lines, start_time=0.5, prompt="hi")
+
+
+def test_parse_lmstudio_stream_computes_ttft_and_tokens_per_sec():
+    import json
+
+    lines = [
+        (f'data: {json.dumps({"choices": [{"delta": {"content": "Hello"}}]})}', 1.0),
+        (f'data: {json.dumps({"choices": [{"delta": {"content": " world"}}]})}', 1.5),
+        (f'data: {json.dumps({"choices": [{"delta": {}}], "usage": {"completion_tokens": 10}})}', 3.0),
+        ("data: [DONE]", 3.1),
+    ]
+    result = parse_lmstudio_stream(lines, start_time=0.5, prompt="hi")
+    assert result.backend == "lmstudio"
+    assert result.ttft_s == 0.5
+    assert result.output_tokens == 10
+    assert result.total_s == 2.6                         # last line (DONE) at 3.1 - 0.5
+    assert result.tokens_per_sec_native is None           # not server-reported for LM Studio
+
+
+def test_parse_lmstudio_stream_without_usage_raises():
+    import json
+
+    import pytest
+
+    lines = [(f'data: {json.dumps({"choices": [{"delta": {"content": "Hi"}}]})}', 1.0)]
+    with pytest.raises(RuntimeError):
+        parse_lmstudio_stream(lines, start_time=0.5, prompt="hi")

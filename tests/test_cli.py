@@ -1,104 +1,53 @@
-"""Tests for cli.py's _offer_install_ollama — the confirm-then-install flow."""
+"""Tests for cli.py's preflight check and --continue flag handling."""
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cli import _offer_install_ollama, _run_ollama_preflight
+from cli import _run_preflight
 
 
-def test_skips_entirely_when_already_installed(monkeypatch, capsys):
-    import core.ollama_install as install_mod
+# ── _run_preflight ───────────────────────────────────────────────────────────
 
-    monkeypatch.setattr(install_mod, "is_ollama_installed", lambda: True)
-    _offer_install_ollama()
-    assert capsys.readouterr().out == ""    # no prompt, no output at all
+def test_preflight_checks_the_configured_model_server(monkeypatch):
+    import cli
 
-
-def test_declining_falls_back_to_manual_link(monkeypatch, capsys):
-    import core.ollama_install as install_mod
-    from rich.prompt import Confirm
-
-    monkeypatch.setattr(install_mod, "is_ollama_installed", lambda: False)
-    monkeypatch.setattr(Confirm, "ask", staticmethod(lambda *a, **k: False))
-    called = []
-    monkeypatch.setattr("tools.shell_tools.run_command",
-                        lambda *a, **k: called.append(1) or ("", "", 0))
-    _offer_install_ollama()
-    assert not called                                    # never attempted install
-    assert "ollama.com/download" in capsys.readouterr().out
+    calls = []
+    monkeypatch.setattr(cli, "_check_openai_compatible", lambda *a: calls.append("check"))
+    _run_preflight(SimpleNamespace(model_base_url="http://x", model_name="m"))
+    assert calls == ["check"]
 
 
-def test_eof_in_non_interactive_context_falls_back_gracefully(monkeypatch, capsys):
-    # A non-interactive/no-stdin context (e.g. piped input) must not crash.
-    import core.ollama_install as install_mod
-    from rich.prompt import Confirm
+# ── _check_openai_compatible — LM Studio / any OpenAI-compatible server ────────
 
-    monkeypatch.setattr(install_mod, "is_ollama_installed", lambda: False)
+def test_check_openai_compatible_warns_when_unreachable(monkeypatch, capsys):
+    import cli
+    import core.model as model_mod
 
-    def raise_eof(*a, **k):
-        raise EOFError
-
-    monkeypatch.setattr(Confirm, "ask", staticmethod(raise_eof))
-    _offer_install_ollama()   # must not raise
-    assert "Skipped" in capsys.readouterr().out
-
-
-def test_confirmed_and_successful_install(monkeypatch, capsys):
-    import core.ollama_install as install_mod
-    from rich.prompt import Confirm
-
-    # Simulate: not installed -> confirm yes -> install succeeds -> now installed.
-    state = {"installed": False}
-    monkeypatch.setattr(install_mod, "is_ollama_installed", lambda: state["installed"])
-    monkeypatch.setattr(Confirm, "ask", staticmethod(lambda *a, **k: True))
-
-    def fake_run(cmd, timeout=None):
-        state["installed"] = True
-        return ("done", "", 0)
-
-    monkeypatch.setattr("tools.shell_tools.run_command", fake_run)
-    _offer_install_ollama()
-    assert "Ollama installed" in capsys.readouterr().out
-
-
-def test_confirmed_but_install_fails(monkeypatch, capsys):
-    import core.ollama_install as install_mod
-    from rich.prompt import Confirm
-
-    monkeypatch.setattr(install_mod, "is_ollama_installed", lambda: False)
-    monkeypatch.setattr(Confirm, "ask", staticmethod(lambda *a, **k: True))
-    monkeypatch.setattr("tools.shell_tools.run_command",
-                        lambda cmd, timeout=None: ("", "network unreachable", 1))
-    _offer_install_ollama()
+    monkeypatch.setattr(model_mod, "is_lmstudio_reachable", lambda base_url: None)
+    cli._check_openai_compatible("http://localhost:1234/v1", "some-model")
     out = capsys.readouterr().out
-    assert "did not complete successfully" in out
-    assert "ollama.com/download" in out
+    assert "Cannot reach the configured model server" in out
 
 
-# ── _run_ollama_preflight — provider-gated ──────────────────────────────────────
-
-def test_preflight_runs_for_ollama_provider(monkeypatch):
+def test_check_openai_compatible_warns_when_model_not_available(monkeypatch, capsys):
     import cli
+    import core.model as model_mod
 
-    calls = []
-    monkeypatch.setattr(cli, "_offer_install_ollama", lambda: calls.append("offer"))
-    monkeypatch.setattr(cli, "_check_ollama", lambda *a: calls.append("check"))
-    _run_ollama_preflight(SimpleNamespace(model_provider="ollama",
-                                          model_base_url="http://x", model_name="m"))
-    assert calls == ["offer", "check"]
+    monkeypatch.setattr(model_mod, "is_lmstudio_reachable", lambda base_url: {"other-model"})
+    cli._check_openai_compatible("http://localhost:1234/v1", "missing-model")
+    out = capsys.readouterr().out
+    assert "isn't available on that server" in out
 
 
-def test_preflight_skipped_for_openai_compatible_provider(monkeypatch):
+def test_check_openai_compatible_silent_when_model_available(monkeypatch, capsys):
     import cli
+    import core.model as model_mod
 
-    calls = []
-    monkeypatch.setattr(cli, "_offer_install_ollama", lambda: calls.append("offer"))
-    monkeypatch.setattr(cli, "_check_ollama", lambda *a: calls.append("check"))
-    _run_ollama_preflight(SimpleNamespace(model_provider="openai_compatible",
-                                          model_base_url="http://x", model_name="m"))
-    assert calls == []
+    monkeypatch.setattr(model_mod, "is_lmstudio_reachable", lambda base_url: {"present-model"})
+    cli._check_openai_compatible("http://localhost:1234/v1", "present-model")
+    assert capsys.readouterr().out == ""
 
 
 # ── --continue / -c ──────────────────────────────────────────────────────────
@@ -107,7 +56,7 @@ def test_continue_flag_is_passed_through_to_run_agent_repl(monkeypatch, tmp_path
     import cli
 
     monkeypatch.setattr(sys, "argv", ["aicoder", "--workspace", str(tmp_path), "--continue"])
-    monkeypatch.setattr(cli, "_run_ollama_preflight", lambda cfg: None)
+    monkeypatch.setattr(cli, "_run_preflight", lambda cfg: None)
     captured = {}
     monkeypatch.setattr(
         "agent.loop.run_agent_repl",
@@ -125,7 +74,7 @@ def test_without_continue_flag_defaults_to_a_fresh_session(monkeypatch, tmp_path
     import cli
 
     monkeypatch.setattr(sys, "argv", ["aicoder", "--workspace", str(tmp_path)])
-    monkeypatch.setattr(cli, "_run_ollama_preflight", lambda cfg: None)
+    monkeypatch.setattr(cli, "_run_preflight", lambda cfg: None)
     captured = {}
     monkeypatch.setattr(
         "agent.loop.run_agent_repl",

@@ -13,7 +13,7 @@ a confusion matrix with precision (don't false-alarm) and recall (don't miss).
     python -m evals.run_consistency_eval --judge-model qwen2.5-coder:14b
     python -m evals.run_consistency_eval --repeat 3            # majority-vote per case
 
-Needs Ollama running. A "contradiction" is the positive class: recall = fraction
+Needs the configured model server running. A "contradiction" is the positive class: recall = fraction
 of real contradictions caught; precision = fraction of flags that were real.
 """
 
