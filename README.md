@@ -17,6 +17,7 @@
 - [Installation](#installation)
 - [Choosing a model](#choosing-a-model)
 - [Quick start](#quick-start)
+- [Usage examples](#usage-examples)
 - [Command-line usage](#command-line-usage)
 - [Talking to the agent](#talking-to-the-agent)
 - [In-session commands](#in-session-commands)
@@ -248,6 +249,173 @@ platform, since it doesn't touch the clipboard at all.
 
 ---
 
+## Usage examples
+
+Realistic sessions — what actually happens when you type a request. `→` is a
+tool call the agent made on its own; everything else is what you'd see on
+screen.
+
+### Fix a bug
+
+```
+myproject> the /login endpoint returns 500 when the password field is empty
+
+→ search_code(query=/login)
+→ read_file(path=api/auth.py)
+→ edit_file(path=api/auth.py, old_string=..., new_string=...)
+  ~ MODIFIED api/auth.py
+  --- a/api/auth.py
+  +++ b/api/auth.py
+  @@ -12,6 +12,8 @@
+   def login(data: LoginRequest):
+  +    if not data.password:
+  +        raise HTTPException(400, "password is required")
+       user = get_user(data.email)
+→ run_tests()
+  ✓ 14 passed
+
+Found it — login() never checked for an empty password before hashing it,
+which threw and bubbled up as a 500. Added a 400 with a clear message and
+confirmed the existing test suite still passes.
+⏱ 18.2s
+```
+
+### Add a feature, with a test
+
+```
+myproject> add a /health endpoint that returns {"status": "ok"}, with a test for it
+
+→ list_files(path=api/)
+→ read_file(path=api/routes.py)
+→ edit_file(path=api/routes.py, old_string=..., new_string=...)
+  ~ MODIFIED api/routes.py
+→ write_file(path=tests/test_health.py, content=...)
+  + CREATED tests/test_health.py
+→ run_tests()
+  ✓ 15 passed
+
+Added GET /health returning {"status": "ok"} and a test asserting the
+200 + JSON body. All tests pass.
+⏱ 12.6s
+```
+
+### Refactor and verify
+
+```
+myproject> refactor utils.py to use pathlib instead of os.path
+
+→ read_file(path=utils.py)
+→ edit_file(path=utils.py, old_string=..., new_string=...)   [repeats per usage]
+→ run_tests()
+  ✓ 15 passed
+→ run_checks()
+  ✓ ruff: no issues
+
+Replaced 4 os.path calls with their pathlib.Path equivalents
+(os.path.join → Path(...) / ..., os.path.exists → Path(...).exists()).
+Tests and lint both pass.
+⏱ 21.4s
+```
+
+### Understand a codebase
+
+```
+myproject> explain how authentication works in this repo
+
+→ find_files(name_pattern=*auth*)
+→ read_file(path=api/auth.py)
+→ search_code(query=verify_token)
+
+Authentication is JWT-based: POST /login issues a token signed with
+JWT_SECRET (api/auth.py:8), and verify_token() (api/auth.py:34) is used
+as a FastAPI dependency on every protected route. Tokens expire after 24h
+(settings.TOKEN_TTL). There's no refresh-token flow yet.
+⏱ 8.1s
+```
+
+### Look something up and act on it
+
+```
+myproject> what's the latest stable version of httpx, and pin it in requirements.txt
+
+→ research(query=httpx latest stable version)
+→ read_file(path=requirements.txt)
+→ edit_file(path=requirements.txt, old_string=httpx, new_string=httpx==0.28.1)
+  ~ MODIFIED requirements.txt
+
+httpx 0.28.1 is the latest stable release (per the cached search). Pinned
+it in requirements.txt.
+⏱ 9.8s
+```
+
+### Review and commit
+
+```
+myproject> /diff
+[shows the accumulated diff for this session]
+
+myproject> commit these changes with a clear message
+
+→ git_status()
+→ git_diff()
+→ git_commit(message="Add /health endpoint and fix empty-password 500 on /login")
+  ✓ committed a1b2c3d
+
+Committed both changes together — same session, related code.
+⏱ 4.2s
+```
+
+### Debug from a screenshot
+
+```
+[Ctrl+V — pastes a screenshot of a broken layout]
+myproject> what's wrong here, and can you fix it?
+
+→ [vision model describes the image: "a product card with the price
+   overlapping the title, image is 3x larger than the surrounding cards"]
+→ search_code(query=ProductCard)
+→ read_file(path=components/ProductCard.tsx)
+→ edit_file(path=components/ProductCard.tsx, old_string=..., new_string=...)
+  ~ MODIFIED components/ProductCard.tsx
+
+The image had no max-width, pushing the price out of the card. Constrained
+it to the card width and added the missing margin under the title.
+⏱ 26.7s
+```
+
+### A quick one-liner for the day-to-day
+
+Most requests don't need a walkthrough — just describe the task:
+
+```
+why is test_login failing? find and fix it
+add input validation to the create_user endpoint
+what does this regex on line 42 of parser.py actually match?
+bump the Node version in the Dockerfile to 22 and update the CI workflow
+```
+
+### Bigger jobs
+
+A single message is enough for most day-to-day work, but some jobs are too
+big for one turn:
+
+- **[`/plan <goal>`](#multi-step-builds-plan-and-resume)** — decomposes a goal
+  into an ordered, resumable task list and builds it, e.g.
+  `/plan add JWT refresh tokens with rotation and revocation`.
+- **[`/develop <idea>`](#developer-mode)** — designs a whole application
+  phase-by-phase (product, architecture, schema, API, UI, …) with you in
+  control of every decision, *then* builds it, e.g.
+  `/develop a multi-tenant invoicing SaaS with Postgres and a React UI`.
+- **[Working from a document](#working-from-documents)** — ground either of
+  the above in a spec you already have:
+  `read the PRD at docs/spec.pdf and scaffold the service it describes`.
+- **[`/knowledge learn <topic>`](#web-research--the-knowledge-base-rag)** —
+  cache current info before a task that needs it, e.g.
+  `/knowledge learn "FastAPI 0.118 lifespan events"` before asking the agent
+  to migrate an app off the old `@app.on_event` startup hooks.
+
+---
+
 ## Command-line usage
 
 ```
@@ -318,15 +486,44 @@ A few literal commands are handled by the REPL; everything else is a task for th
 
 ## Multi-step builds (`/plan` and `/resume`)
 
-For a large goal, use `/plan`:
+For a large goal, use `/plan`. AICoder decomposes it into an ordered task list, then executes each task — reading/writing files and verifying as it goes — pausing for your confirmation between tasks:
 
 ```
-my-project> /plan build a FastAPI todo service from docs/PRD.md
+my-project> /plan add JWT refresh tokens with rotation and revocation
+
+Decomposed into 5 tasks:
+  1. Add a refresh_tokens table (id, user_id, token_hash, expires_at, revoked_at)
+  2. Issue a refresh token alongside the access token on login
+  3. Add POST /auth/refresh — validate + rotate the refresh token
+  4. Add POST /auth/revoke — mark a refresh token revoked
+  5. Add tests for issuance, rotation, revocation, and reuse-detection
+
+Starting task 1/5: Add a refresh_tokens table
+→ read_file(path=models.py)
+→ edit_file(path=models.py, old_string=..., new_string=...)
+  ~ MODIFIED models.py
+→ run_shell(command=alembic revision --autogenerate -m "add refresh_tokens")
+→ run_tests()
+  ✓ 15 passed
+✓ Task 1/5 done. Continue to task 2/5? [Y/n]
 ```
 
-AICoder decomposes the goal (grounded in any ingested document) into an ordered task list, then executes each task — reading/writing files and verifying as it goes — pausing for your confirmation between tasks.
+It's **resumable**: quit anytime, and next session type `/resume` to continue from the first unfinished task:
 
-It's **resumable**: quit anytime, and next session type `/resume` to continue from the first unfinished task. Plan state is saved under `~/.aicoder/memory/<project>/plan.json`.
+```
+my-project> /resume
+
+Resuming plan: add JWT refresh tokens with rotation and revocation (1/5 done)
+Starting task 2/5: Issue a refresh token alongside the access token on login
+→ read_file(path=api/auth.py)
+→ edit_file(path=api/auth.py, old_string=..., new_string=...)
+  ~ MODIFIED api/auth.py
+→ run_tests()
+  ✓ 16 passed
+✓ Task 2/5 done. Continue to task 3/5? [Y/n]
+```
+
+Plan state is saved under `~/.aicoder/memory/<project>/plan.json`, so this works even after closing the terminal or switching machines (same `~/.aicoder` directory).
 
 ---
 
@@ -336,7 +533,66 @@ For building real applications with full control, **Developer Mode** runs a **ro
 
 ```
 my-project> /develop a multi-tenant invoicing SaaS with Postgres and a React UI
+
+━━ Phase 1/14: Product Vision (Product Manager) ━━
+As your Product Manager, let's nail down the vision first. A few questions:
+ 1. Who's the primary user — the tenant's own accountant, or their customers
+    paying invoices?
+ 2. Is "multi-tenant" full data isolation per company, or a shared workspace?
+ 3. What's the core loop that makes this worth paying for vs. spreadsheets?
+
+my-project> tenant = a small business owner; full data isolation per company;
+core loop is create invoice → send → get paid → auto-reconcile
+
+Draft decision:
+  Primary user: small business owners managing their own invoicing.
+  Isolation: full per-tenant data isolation (row-level, tenant_id on every table).
+  Core loop: create → send → track payment → auto-reconcile against bank feed.
+  ...
+
+my-project> done
+✓ Phase 1/14 captured → docs/dev/01_product_vision.md
+
+━━ Phase 2/14: Market & Competitors (Market Analyst) ━━
+→ research(query=invoicing SaaS competitors small business 2026)
+Based on current players (FreshBooks, Wave, Invoice Ninja)... your
+differentiator is the auto-reconcile loop — most competitors require manual
+matching. Agree, or want to weigh a different angle?
+
+my-project> agree, that's the wedge
+✓ Phase 2/14 captured → docs/dev/02_market.md
+
+... (12 more phases — architecture, schema, API, UI, security, testing, ...)
 ```
+
+Once every phase is captured (or design review flags something you fix via `/dev revisit`), `/dev build` turns it into code:
+
+```
+my-project> /dev build
+
+Proposed file plan (42 files) — edit docs/dev/build_plan.json to change paths/
+order/naming, or press Enter to build as-is:
+  backend/app/models/{tenant,invoice,payment}.py
+  backend/app/api/routes/{invoices,auth,webhooks}.py
+  frontend/src/pages/{InvoiceList,InvoiceDetail}.tsx
+  ...
+
+Building... [1/42] backend/app/models/tenant.py
+  ✓ self-review: no issues
+[2/42] backend/app/models/invoice.py
+  ✓ self-review: fixed 1 issue (missing tenant_id foreign key)
+  ...
+[42/42] frontend/src/pages/InvoiceList.tsx  ✓
+
+Verifying: compile check → tests → fix loop
+  ✓ backend compiles, 28/28 tests pass
+  ✓ frontend builds, 6/6 tests pass
+
+Build complete. docs/dev/build_manifest.json maps each file to the phases
+that shaped it.
+```
+
+If `--fast` is passed instead (`/develop --fast <idea>`), every phase is decided in one pass with no back-and-forth — good for a quick throwaway scaffold, at the cost of your input into each decision.
 
 ### The phases
 

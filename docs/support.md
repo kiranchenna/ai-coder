@@ -2,7 +2,9 @@
 
 Practical help for running AICoder. For *how it works* see
 [features.md](features.md); for *how it's built* see
-[architecture.md](architecture.md).
+[architecture.md](architecture.md); for **worked examples of real sessions**
+(bug fixes, feature adds, refactors, screenshot debugging, ...) see the
+[README's "Usage examples"](../README.md#usage-examples).
 
 ---
 

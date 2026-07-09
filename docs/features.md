@@ -5,6 +5,10 @@ calls tools to read and edit code, run commands, research the web, run tests,
 and remember decisions. There is no fixed command pipeline — the model decides
 which tools to use.
 
+This is a reference for *what exists*; for **worked examples of real
+sessions** (bug fixes, feature adds, refactors, multi-step builds, screenshot
+debugging, ...) see the [README's "Usage examples"](../README.md#usage-examples).
+
 ---
 
 ## The agent's tools

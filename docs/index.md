@@ -8,7 +8,7 @@ researches the web, and remembers your project — all on your machine.
 
 | Document | For | Covers |
 |---|---|---|
-| [../README.md](../README.md) | everyone | Quickstart, install, all commands, configuration reference |
+| [../README.md](../README.md) | everyone | Quickstart, [usage examples](../README.md#usage-examples), install, all commands, configuration reference |
 | [features.md](features.md) | users | How the product works — the agentic loop, the tools, in-session commands, planning, **Developer Mode** and its quality levers |
 | [architecture.md](architecture.md) | contributors | How it's built — directory structure, tech stack, data flow, config resolution, **the eval harness**, data formats |
 | [support.md](support.md) | users | Support & FAQ — troubleshooting, common questions, the safety model, known limitations, reporting issues |
@@ -18,7 +18,8 @@ researches the web, and remembers your project — all on your machine.
 
 ## Start here
 
-- **New user?** [README](../README.md) → quickstart, then [support.md](support.md)
+- **New user?** [README](../README.md) → quickstart and
+  [usage examples](../README.md#usage-examples), then [support.md](support.md)
   if anything misbehaves.
 - **Want to understand a feature?** [features.md](features.md).
 - **Contributing or curious how it works?** [architecture.md](architecture.md),

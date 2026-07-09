@@ -298,6 +298,15 @@ def test_instructions_injected_into_system_prompt(tmp_path):
     assert "Use 2-space indent." in p
 
 
+def test_system_prompt_tells_model_to_defer_large_scope_to_slash_commands(tmp_path):
+    from agent.prompts import system_prompt
+    p = system_prompt(tmp_path, ["read_file"])
+    assert "/develop <idea>" in p
+    assert "/plan <goal>" in p
+    assert "do NOT" in p and "start writing files" in p
+    assert "cannot invoke `/develop` or `/plan` yourself" in p
+
+
 # ─── History compaction (context management) ──────────────────────────────────
 
 def _mk_session_with_history(messages, budget):
