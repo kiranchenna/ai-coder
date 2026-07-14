@@ -1,6 +1,34 @@
 # Changelog
 
-## Unreleased
+## 4.0.0 - 2026-07-14
+- **Startup banner redesign, LM Studio auto-start, and active-work session
+  awareness.**
+  - The startup banner (shared by the plain REPL and the TUI) is now a
+    two-part welcome screen: hostname + a large hand-built ASCII wordmark,
+    version + last-updated date (from the source tree's last git commit,
+    since there's no formal dated-release process), workspace path, and
+    model/dev profile up top; a rotating usage tip and a "Top tools" cheat
+    sheet (`read_file`/`edit_file`/`run_shell`/`run_tests`/`search_code`)
+    below.
+  - **LM Studio auto-start.** If the configured model server is LM Studio's
+    default `localhost:1234` endpoint and it's unreachable, `aicoder` now
+    runs `lms server start` and loads the configured model automatically
+    instead of just telling the user to open LM Studio themselves —
+    narrating progress live (`core.model.ensure_lmstudio_running`'s
+    `on_status` callback) so the multi-second operation doesn't look like a
+    hang, and surfacing the real failure reason (e.g. `lms` not on PATH →
+    "install LM Studio (lmstudio.ai)") instead of a generic, potentially
+    misleading "open LM Studio" warning. Never touches non-LM-Studio
+    (custom/remote) endpoints. 8 new tests across `test_cli.py` and
+    `test_model_provider.py`.
+  - **Active work note.** The agent now checks for an in-progress `/plan`
+    task list or an existing Developer Mode design (`docs/dev/state.json`)
+    at the start of every session, injects a note into the system prompt
+    telling the model to point the user at `/resume`/`/dev status` instead
+    of re-suggesting `/plan`/`/develop` or attempting the work itself, and —
+    since the model doesn't reliably act on that alone — both front-ends
+    also print a deterministic "A Developer Mode design exists…" banner
+    line at startup.
 - **Ollama removed — LM Studio is now the only supported backend.** A prior
   release added full dual-provider support (Ollama + LM Studio, switchable
   with `/provider`); this release rips Ollama back out entirely per a

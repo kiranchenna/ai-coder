@@ -4,6 +4,12 @@
 
 <h1 align="center">AICoder ✨</h1>
 
+<p align="center">
+  <a href="https://pypi.org/project/ai-coder/"><img src="https://img.shields.io/pypi/v/ai-coder.svg" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/ai-coder/"><img src="https://img.shields.io/pypi/pyversions/ai-coder.svg" alt="Python versions"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+</p>
+
 > A local, offline **agentic coding assistant** — it plans, reads and edits real code, runs commands and tests, researches the web, and remembers your project — all running on your own machine via [LM Studio](https://lmstudio.ai/) by default. No API keys required, nothing sent anywhere unless you invoke web research or explicitly point it at a different server/API (see [Using a different backend](#using-a-different-backend)).
 
 ---
@@ -94,7 +100,7 @@ your message
 ## Requirements
 
 - **Python 3.11+**
-- **[LM Studio](https://lmstudio.ai/)** installed, with its local server running (Developer tab → Start Server) — `aicoder` warns you at startup if it can't reach it
+- **[LM Studio](https://lmstudio.ai/)** installed — `aicoder` auto-starts its local server and loads your configured model on launch if it isn't already running; if LM Studio itself isn't installed, it tells you so at startup
 - A downloaded chat model (and, for web/document RAG, an embedding model)
 
 ---
@@ -989,7 +995,7 @@ Being honest about the tradeoffs:
 
 ## Troubleshooting
 
-- **"Couldn't reach LM Studio"** — make sure LM Studio's local server is running (Developer tab → Start Server), and that a model is loaded (`lms load <model-id>`, or from the UI).
+- **"Cannot reach the configured model server"** — `aicoder` already tries to auto-start LM Studio's local server and load your configured model before showing this; if you still see it, either LM Studio itself isn't installed (get it from [lmstudio.ai](https://lmstudio.ai/)), or `base_url` in your config points somewhere else.
 - **`--selftest` says the model can't call tools** — switch to a stronger model (`aicoder --model qwen2.5-coder-7b-instruct`).
 - **Web research / `read_document` says it couldn't ingest** — download an embedding model in LM Studio (e.g. `nomic-ai/nomic-embed-text-v1.5-GGUF`) and set `knowledge.embedding_model` if it's not the default.
 - **MCP servers don't load** — install the extra (`pip install "ai-coder[mcp]"`) and check the server `command`/`args` in your config.
