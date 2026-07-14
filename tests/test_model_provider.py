@@ -232,3 +232,120 @@ def test_is_lmstudio_reachable_none_when_unreachable(monkeypatch):
 
     monkeypatch.setattr(httpx, "get", raise_connect_error)
     assert is_lmstudio_reachable("http://localhost:1234/v1") is None
+
+
+# ── is_lmstudio_endpoint / ensure_lmstudio_running (auto-start) ─────────────────
+
+def test_is_lmstudio_endpoint_matches_default_url_only():
+    from core.model import is_lmstudio_endpoint
+
+    assert is_lmstudio_endpoint("http://localhost:1234/v1") is True
+    assert is_lmstudio_endpoint("http://localhost:1234/v1/") is True  # trailing slash
+    assert is_lmstudio_endpoint("https://api.example.com/v1") is False
+    assert is_lmstudio_endpoint("http://localhost:8080/v1") is False  # a different local server
+
+
+def test_ensure_lmstudio_running_is_a_noop_when_already_reachable(monkeypatch):
+    import subprocess
+
+    import core.model as model_mod
+
+    monkeypatch.setattr(model_mod, "is_lmstudio_reachable", lambda base_url: {"m"})
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("must not shell out when already reachable")))
+    assert model_mod.ensure_lmstudio_running("m") is True
+
+
+def test_ensure_lmstudio_running_starts_the_server_and_loads_the_model(monkeypatch):
+    import subprocess
+
+    import core.model as model_mod
+
+    calls = []
+    reachable = iter([None, {"target-model"}])  # unreachable, then reachable post-start
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return _FakeCompletedProcess(stdout="[]")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(model_mod, "is_lmstudio_reachable", lambda base_url: next(reachable))
+    assert model_mod.ensure_lmstudio_running("target-model") is True
+    assert calls[0] == ["lms", "server", "start"]
+    # switch_lmstudio_model("target-model") ran too — it `lms ps`'d then loaded it
+    assert ["lms", "load", "target-model", "-y"] in calls
+
+
+def test_ensure_lmstudio_running_reports_progress_via_on_status(monkeypatch):
+    """The caller-supplied on_status callback should narrate both steps, in
+    order, so a caller (cli.py) can surface what's happening behind the
+    scenes instead of this multi-second operation looking like a hang."""
+    import subprocess
+
+    import core.model as model_mod
+
+    reachable = iter([None, {"target-model"}])
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: _FakeCompletedProcess(stdout="[]"))
+    monkeypatch.setattr(model_mod, "is_lmstudio_reachable", lambda base_url: next(reachable))
+
+    messages = []
+    model_mod.ensure_lmstudio_running("target-model", on_status=messages.append)
+    assert len(messages) == 2
+    assert "starting" in messages[0].lower()
+    assert "target-model" in messages[1]
+
+
+def test_ensure_lmstudio_running_on_status_not_called_when_already_reachable(monkeypatch):
+    import core.model as model_mod
+
+    monkeypatch.setattr(model_mod, "is_lmstudio_reachable", lambda base_url: {"m"})
+    messages = []
+    assert model_mod.ensure_lmstudio_running("m", on_status=messages.append) is True
+    assert messages == []
+
+
+def test_ensure_lmstudio_running_false_when_server_start_fails(monkeypatch):
+    import subprocess
+
+    import core.model as model_mod
+
+    monkeypatch.setattr(model_mod, "is_lmstudio_reachable", lambda base_url: None)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _FakeCompletedProcess(
+        stderr="no LM Studio instance running", returncode=1))
+    messages = []
+    assert model_mod.ensure_lmstudio_running("target-model", on_status=messages.append) is False
+    # The specific failure reason must be surfaced, not just swallowed into a bare False.
+    assert "no LM Studio instance running" in messages[-1]
+
+
+def test_ensure_lmstudio_running_reports_lms_not_installed(monkeypatch):
+    """Live-reproduced gap: a user with no LM Studio installed at all (`lms`
+    not on PATH) used to just see a generic "open LM Studio" warning with no
+    mention that it isn't installed. `_run_lms` already raises an actionable
+    RuntimeError for this (see its FileNotFoundError handling) — it must
+    reach the caller via on_status instead of being discarded."""
+    import subprocess
+
+    import core.model as model_mod
+
+    monkeypatch.setattr(model_mod, "is_lmstudio_reachable", lambda base_url: None)
+
+    def raise_not_found(*a, **k):
+        raise FileNotFoundError("no such file")
+
+    monkeypatch.setattr(subprocess, "run", raise_not_found)
+    messages = []
+    assert model_mod.ensure_lmstudio_running("target-model", on_status=messages.append) is False
+    assert any("install LM Studio" in m for m in messages)
+
+
+def test_ensure_lmstudio_running_false_when_still_unreachable_after_start(monkeypatch):
+    import subprocess
+
+    import core.model as model_mod
+
+    monkeypatch.setattr(model_mod, "is_lmstudio_reachable", lambda base_url: None)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _FakeCompletedProcess(stdout=""))
+    messages = []
+    assert model_mod.ensure_lmstudio_running("target-model", on_status=messages.append) is False
+    assert "still not reachable" in messages[-1]

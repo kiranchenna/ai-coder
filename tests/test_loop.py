@@ -654,6 +654,47 @@ def test_repl_enters_and_exits_alt_screen_on_a_real_terminal(monkeypatch, tmp_pa
     assert "\x1b[?25l" not in out, "cursor should stay visible (hide_cursor=False)"
 
 
+def test_repl_shows_devmode_banner_when_a_design_exists(monkeypatch, tmp_path):
+    import io
+
+    from rich.console import Console
+    from rich.prompt import Prompt
+
+    import agent.loop as loop_mod
+
+    dev_dir = tmp_path / "docs" / "dev"
+    dev_dir.mkdir(parents=True)
+    (dev_dir / "state.json").write_text("{}")
+
+    fake_console = Console(file=io.StringIO(), force_terminal=True, width=80)
+    monkeypatch.setattr(loop_mod, "console", fake_console)
+    monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: "/exit"))
+
+    loop_mod.run_agent_repl(tmp_path)
+
+    out = fake_console.file.getvalue()
+    assert "Developer Mode design exists" in out
+    assert "/dev status" in out
+
+
+def test_repl_skips_devmode_banner_when_no_design_exists(monkeypatch, tmp_path):
+    import io
+
+    from rich.console import Console
+    from rich.prompt import Prompt
+
+    import agent.loop as loop_mod
+
+    fake_console = Console(file=io.StringIO(), force_terminal=True, width=80)
+    monkeypatch.setattr(loop_mod, "console", fake_console)
+    monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: "/exit"))
+
+    loop_mod.run_agent_repl(tmp_path)
+
+    out = fake_console.file.getvalue()
+    assert "Developer Mode design exists" not in out
+
+
 def test_repl_skips_alt_screen_on_a_non_terminal(monkeypatch, tmp_path):
     # Piped/redirected output (e.g. scripted usage, tests, CI) must not get
     # raw escape codes written into it — Console.screen() already guards this

@@ -12,7 +12,7 @@ now returns structured tool calls that the agent loop executes directly.
 from __future__ import annotations
 
 import json
-from typing import Sequence
+from typing import Callable, Sequence
 
 from langchain_core.messages import HumanMessage
 
@@ -225,6 +225,18 @@ def is_lmstudio_model_downloaded(model_name: str) -> bool | None:
     return any(m["name"] == model_name for m in models)
 
 
+LMSTUDIO_DEFAULT_BASE_URL = "http://localhost:1234/v1"
+
+
+def is_lmstudio_endpoint(base_url: str) -> bool:
+    """Whether `base_url` matches LM Studio's default local server — gates
+    every LM-Studio-specific `lms` CLI shellout (auto-start, load/unload,
+    model discovery) so none of it is attempted against a different
+    OpenAI-compatible server (a custom local server, a hosted API), where
+    `lms` legitimately wouldn't apply."""
+    return base_url.rstrip("/") == LMSTUDIO_DEFAULT_BASE_URL
+
+
 def switch_lmstudio_model(name: str, *, timeout: float = 120) -> None:
     """
     Load ``name`` in LM Studio, unloading any other currently-loaded LLM
@@ -268,6 +280,56 @@ def is_lmstudio_reachable(base_url: str) -> set[str] | None:
         return {m.get("id", "") for m in resp.json().get("data", [])}
     except Exception:
         return None
+
+
+def ensure_lmstudio_running(
+    model_name: str, *, on_status: Callable[[str], None] | None = None,
+) -> bool:
+    """Best-effort auto-start: if LM Studio's local server isn't reachable,
+    start it (`lms server start`) and load `model_name` — so a fresh
+    `aicoder` launch doesn't require manually opening LM Studio and clicking
+    Start Server first. Returns True once the server is confirmed reachable
+    (whether it needed starting or not); False if it couldn't be brought up
+    (LM Studio/`lms` not installed, app not running, ...) — the caller
+    (cli.py's preflight check) falls back to its existing warning either way.
+    Only ever called against LM Studio's default endpoint (see
+    is_lmstudio_endpoint) — never attempted against a custom/remote server.
+
+    `on_status`, if given, is called with short progress messages ("starting
+    the server", "loading the model") as each step runs — this is a
+    multi-second, otherwise-silent operation (subprocess shellouts + a model
+    load), so a caller can surface what's happening instead of it looking
+    like the app hung. This module deliberately has no console/UI dependency
+    of its own — that's left to the caller (e.g. cli.py) via this callback.
+    """
+    def emit(msg: str) -> None:
+        if on_status is not None:
+            on_status(msg)
+
+    if is_lmstudio_reachable(LMSTUDIO_DEFAULT_BASE_URL) is not None:
+        return True
+
+    emit("LM Studio's local server isn't running — starting it…")
+    try:
+        _run_lms("server", "start", timeout=20)
+    except RuntimeError as e:
+        # Surface *why* (e.g. `lms` not on PATH at all — meaning LM Studio
+        # likely isn't installed) rather than silently returning False and
+        # leaving the caller's generic "open LM Studio" fallback warning as
+        # the only thing shown, which wrongly presumes it's installed.
+        emit(str(e))
+        return False
+    if is_lmstudio_reachable(LMSTUDIO_DEFAULT_BASE_URL) is None:
+        emit("Server start reported success, but it's still not reachable.")
+        return False
+
+    emit(f"Server started — loading '{model_name}'…")
+    try:
+        switch_lmstudio_model(model_name)
+    except RuntimeError:
+        pass  # server's up even if this specific model failed to load — the
+              # "isn't available on that server" check right after reports that
+    return True
 
 
 def selftest() -> bool:

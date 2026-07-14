@@ -155,25 +155,44 @@ def _check_openai_compatible(base_url: str, model_name: str) -> None:
     what it currently reports via /v1/models — LM Studio's own /v1/models
     lists every model downloaded to disk (confirmed live, not just loaded
     ones), so this doubles as a real "is it available" check there, not
-    just a reachability ping."""
-    from core.model import is_lmstudio_reachable
+    just a reachability ping. If it's LM Studio's default endpoint and the
+    server's down, tries to auto-start it (and load the configured model)
+    before falling back to the warning below, so a fresh `aicoder` launch
+    doesn't require manually opening LM Studio first — printing progress as
+    it goes (see ensure_lmstudio_running's `on_status`) so that multi-second,
+    otherwise-silent operation doesn't look like `aicoder` hung."""
+    from core.model import ensure_lmstudio_running, is_lmstudio_endpoint, is_lmstudio_reachable
 
     from core.console import SafeConsole
 
+    console = SafeConsole()
     models = is_lmstudio_reachable(base_url)
+    auto_started = False
+    if models is None and is_lmstudio_endpoint(base_url):
+        # Plain dim text, no "in progress" icon — on_status also carries a
+        # terminal failure reason (e.g. "'lms' isn't on your PATH…"), which
+        # an hourglass would misleadingly suggest is still underway.
+        auto_started = ensure_lmstudio_running(
+            model_name, on_status=lambda msg: console.print(f"[dim]{msg}[/dim]")
+        )
+        if auto_started:
+            models = is_lmstudio_reachable(base_url)
+
     if models is None:
-        SafeConsole().print(
+        console.print(
             "\n[yellow]⚠ Cannot reach the configured model server.[/yellow]\n"
             f"[dim]Expected an OpenAI-compatible server at: {base_url}[/dim]\n"
             "[dim]If this is LM Studio: open it and start the local server "
             "(Developer tab → Start Server).[/dim]\n"
         )
     elif model_name not in models:
-        SafeConsole().print(
+        console.print(
             f"\n[yellow]⚠ '[bold]{model_name}[/bold]' isn't available on that server.[/yellow]\n"
             f"[dim]If this is LM Studio: `lms get {model_name}` (or pick one you already "
             "have with /model).[/dim]\n"
         )
+    elif auto_started:
+        console.print(f"[green]✓ LM Studio is up and '{model_name}' is ready.[/green]")
 
 
 if __name__ == "__main__":

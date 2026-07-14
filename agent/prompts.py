@@ -14,6 +14,7 @@ def system_prompt(
     repo_overview: str = "",
     project_memory: str = "",
     project_instructions: str = "",
+    active_work: str = "",
 ) -> str:
     """Build the agent's system prompt for a given workspace and toolset."""
     tools = ", ".join(tool_names)
@@ -105,4 +106,8 @@ than repeating the same call."""
             "\n\n# Project overview (for orientation only — read files for detail)\n"
             + repo_overview
         )
+
+    if active_work:
+        base += "\n\n# Session state\n" + active_work
+
     return base

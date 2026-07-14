@@ -307,6 +307,43 @@ def test_system_prompt_tells_model_to_defer_large_scope_to_slash_commands(tmp_pa
     assert "cannot invoke `/develop` or `/plan` yourself" in p
 
 
+def test_active_work_note_empty_with_no_plan_or_devmode_session(tmp_path, monkeypatch):
+    from agent.loop import _active_work_note
+    monkeypatch.setattr("core.config.MEMORY_DIR", tmp_path / "mem")
+    monkeypatch.setattr("agent.planner.MEMORY_DIR", tmp_path / "mem")
+    assert _active_work_note(tmp_path) == ""
+
+
+def test_active_work_note_flags_an_active_plan(tmp_path, monkeypatch):
+    from agent.loop import _active_work_note
+    from agent.planner import Planner
+    monkeypatch.setattr("core.config.MEMORY_DIR", tmp_path / "mem")
+    monkeypatch.setattr("agent.planner.MEMORY_DIR", tmp_path / "mem")
+    Planner(tmp_path, None).save(
+        {"goal": "g", "tasks": [{"id": 1, "title": "t", "status": "pending"}]}
+    )
+    note = _active_work_note(tmp_path)
+    assert "/resume" in note
+
+
+def test_active_work_note_flags_an_existing_devmode_session(tmp_path, monkeypatch):
+    from agent.loop import _active_work_note
+    monkeypatch.setattr("core.config.MEMORY_DIR", tmp_path / "mem")
+    monkeypatch.setattr("agent.planner.MEMORY_DIR", tmp_path / "mem")
+    dev_dir = tmp_path / "docs" / "dev"
+    dev_dir.mkdir(parents=True)
+    (dev_dir / "state.json").write_text("{}")
+    note = _active_work_note(tmp_path)
+    assert "/dev status" in note
+
+
+def test_active_work_note_flows_into_system_prompt(tmp_path):
+    from agent.prompts import system_prompt
+    p = system_prompt(tmp_path, ["read_file"], active_work="An unfinished /plan exists.")
+    assert "Session state" in p
+    assert "An unfinished /plan exists." in p
+
+
 # ─── History compaction (context management) ──────────────────────────────────
 
 def _mk_session_with_history(messages, budget):

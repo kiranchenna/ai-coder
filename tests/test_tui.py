@@ -113,6 +113,21 @@ async def test_app_mounts_and_shows_the_banner():
 
 
 @pytest.mark.asyncio
+async def test_app_shows_devmode_banner_when_a_design_exists():
+    ws = Path(tempfile.mkdtemp())
+    dev_dir = ws / "docs" / "dev"
+    dev_dir.mkdir(parents=True)
+    (dev_dir / "state.json").write_text("{}")
+
+    app = AICoderApp(ws)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        text = _rendered_text(app.query_one("#chat", RichLog))
+        assert "Developer Mode design exists" in text
+        assert "/dev status" in text
+
+
+@pytest.mark.asyncio
 async def test_continue_session_resumes_a_previous_conversation():
     ws = Path(tempfile.mkdtemp())
 

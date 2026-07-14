@@ -691,6 +691,10 @@ class AICoderApp(App):
         if planner.has_active_plan():
             rich_log.write("[dim]An in-progress plan exists for this project — type "
                            "'/resume' to continue it.[/dim]")
+        from agent.loop import _has_devmode_session
+        if _has_devmode_session(self.workspace):
+            rich_log.write("[dim]A Developer Mode design exists for this project — type "
+                           "'/dev status' to see progress, or '/dev' to resume it.[/dim]")
 
         self.query_one("#prompt", Input).focus()
         self._status_timer = self.set_interval(0.3, self._tick_status)

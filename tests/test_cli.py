@@ -26,7 +26,52 @@ def test_check_openai_compatible_warns_when_unreachable(monkeypatch, capsys):
     import core.model as model_mod
 
     monkeypatch.setattr(model_mod, "is_lmstudio_reachable", lambda base_url: None)
+    # Auto-start attempted (it's LM Studio's default endpoint) but fails here
+    # (e.g. LM Studio itself isn't installed/running) — falls back to the warning.
+    monkeypatch.setattr(model_mod, "ensure_lmstudio_running", lambda model_name, **kw: False)
     cli._check_openai_compatible("http://localhost:1234/v1", "some-model")
+    out = capsys.readouterr().out
+    assert "Cannot reach the configured model server" in out
+
+
+def test_check_openai_compatible_auto_starts_lmstudio_when_unreachable(monkeypatch, capsys):
+    """LM Studio's default endpoint + server down → try to auto-start it,
+    surfacing its progress messages, then confirm readiness once the model's
+    reachable — instead of just going silent."""
+    import cli
+    import core.model as model_mod
+
+    calls = []
+    responses = iter([None, {"some-model"}])  # unreachable, then reachable after auto-start
+
+    def fake_ensure(model_name, *, on_status=None):
+        calls.append(model_name)
+        if on_status:
+            on_status("starting the server…")
+            on_status(f"loading '{model_name}'…")
+        return True
+
+    monkeypatch.setattr(model_mod, "is_lmstudio_reachable", lambda base_url: next(responses))
+    monkeypatch.setattr(model_mod, "ensure_lmstudio_running", fake_ensure)
+    cli._check_openai_compatible("http://localhost:1234/v1", "some-model")
+    assert calls == ["some-model"]
+    out = capsys.readouterr().out
+    assert "starting the server…" in out
+    assert "loading 'some-model'…" in out
+    assert "✓" in out and "ready" in out
+
+
+def test_check_openai_compatible_skips_auto_start_for_a_non_lmstudio_endpoint(monkeypatch, capsys):
+    """A custom/remote OpenAI-compatible server should never trigger the
+    LM-Studio-specific `lms` auto-start shellout."""
+    import cli
+    import core.model as model_mod
+
+    calls = []
+    monkeypatch.setattr(model_mod, "is_lmstudio_reachable", lambda base_url: None)
+    monkeypatch.setattr(model_mod, "ensure_lmstudio_running", lambda model_name, **kw: calls.append(model_name))
+    cli._check_openai_compatible("https://api.example.com/v1", "some-model")
+    assert calls == []
     out = capsys.readouterr().out
     assert "Cannot reach the configured model server" in out
 

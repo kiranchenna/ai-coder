@@ -16,6 +16,9 @@ extend in later phases (planner, verify loop, memory).
 
 from __future__ import annotations
 
+import random
+import socket
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -33,7 +36,12 @@ from rich.prompt import Confirm, Prompt
 from rich.text import Text
 
 from core.console import SafeConsole
-from core.model import balanced_json_objects, extract_text_tool_calls, get_chat_model
+from core.model import (
+    balanced_json_objects,
+    extract_text_tool_calls,
+    get_chat_model,
+    is_lmstudio_endpoint,
+)
 from agent.prompts import system_prompt
 from agent.tools import build_tools
 
@@ -48,6 +56,40 @@ MAX_STEPS = 12
 # equivalent (see assets/icon.png for the real logo, used in the README).
 BRAND = ("[bold cyan]⟨[/bold cyan][bold yellow1]❯[/bold yellow1][dim yellow1]_[/dim yellow1]"
          "[bold cyan]⟩[/bold cyan]  [bold cyan]AI[/bold cyan][bold yellow1]Coder[/bold yellow1]")
+
+# Large-scale wordmark for the startup banner (see _startup_banner below) —
+# a hand-built 5-row block font, "AI" in cyan / "CODER" in yellow1 to match
+# BRAND's palette. Kept as a literal (not generated at runtime) since it's a
+# one-time decorative asset, not something that needs to render other words.
+LOGO = (
+    "[bold cyan] ███  ███[/bold cyan] [bold yellow1] ████  ███  ████  █████ ████ [/bold yellow1]\n"
+    "[bold cyan]█   █  █ [/bold cyan] [bold yellow1]█     █   █ █   █ █     █   █[/bold yellow1]\n"
+    "[bold cyan]█████  █ [/bold cyan] [bold yellow1]█     █   █ █   █ ████  ████ [/bold yellow1]\n"
+    "[bold cyan]█   █  █ [/bold cyan] [bold yellow1]█     █   █ █   █ █     █  █ [/bold yellow1]\n"
+    "[bold cyan]█   █ ███[/bold cyan] [bold yellow1] ████  ███  ████  █████ █   █[/bold yellow1]"
+)
+
+# The five tools shown on the startup banner — a curated highlight reel (the
+# full set is longer; see agent/tools.py), picked to sketch the core
+# explore → edit → verify loop for someone seeing the app for the first time.
+TOOL_HIGHLIGHTS: list[tuple[str, str]] = [
+    ("read_file", "read a file before editing it"),
+    ("edit_file", "replace one exact match in an existing file"),
+    ("run_shell", "run a shell command in the project root"),
+    ("run_tests", "run the project's test suite to verify changes"),
+    ("search_code", "grep-like search across file contents"),
+]
+
+STARTUP_TIPS: list[str] = [
+    "Describe a task in plain English — the agent plans, edits, and verifies on its own.",
+    "'/plan <goal>' breaks a bigger goal into a resumable, multi-step build.",
+    "'/init' analyzes the codebase and writes an AICODER.md so the agent ramps up faster next time.",
+    "'/model' switches models mid-session without restarting.",
+    "'/review' asks the agent to review the current git diff before you commit.",
+    "Ctrl+V pastes a screenshot straight into the chat — handy for UI bugs.",
+    "'aicoder --continue' resumes your last conversation for this workspace.",
+    "'/context' shows how close you are to the compaction budget.",
+]
 
 # Every slash command's name + a one-line description, used by the TUI's "/"
 # autocomplete dropdown (agent/tui.py). /help below has its own, richer
@@ -157,6 +199,47 @@ def _project_memory(workspace: Path) -> str:
         return ""
 
 
+def _has_devmode_session(workspace: Path) -> bool:
+    """Whether a Developer Mode design has already been started here."""
+    try:
+        return (workspace / "docs" / "dev" / "state.json").exists()
+    except Exception:
+        return False
+
+
+def _active_work_note(workspace: Path) -> str:
+    """Flag an in-progress /plan or /develop session (best-effort), so the
+    model points to /resume or /dev status instead of re-suggesting a fresh
+    /plan or /develop, or worse, attempting the work itself. This is a
+    secondary nudge only — the model doesn't reliably act on it (verified
+    live), so the startup banners' deterministic checks (see
+    _has_devmode_session / Planner.has_active_plan, printed unconditionally
+    before any model call) are the actual reliable signal."""
+    notes = []
+    try:
+        from agent.planner import Planner
+
+        if Planner(workspace, None).has_active_plan():
+            notes.append(
+                "An unfinished /plan task list already exists for this "
+                "project — tell the user to run /resume rather than "
+                "starting a new /plan or attempting the work yourself."
+            )
+    except Exception:
+        pass
+    try:
+        if _has_devmode_session(workspace):
+            notes.append(
+                "A Developer Mode design (docs/dev/) already exists for "
+                "this project — tell the user to run /dev status to see "
+                "progress, /dev to resume the design, or /dev build if the "
+                "design is done, rather than suggesting a fresh /develop."
+            )
+    except Exception:
+        pass
+    return "\n".join(notes)
+
+
 # Project-instructions files, in load order (global first, then project).
 _INSTRUCTION_NAMES = ("AICODER.md", ".aicoder.md", ".aicoderrules")
 _INSTRUCTIONS_MAX_CHARS = 6_000
@@ -246,6 +329,7 @@ class AgentSession:
                     _repo_overview(workspace),
                     _project_memory(workspace),
                     self.instructions,
+                    _active_work_note(workspace),
                 )
             )
         ]
@@ -717,15 +801,12 @@ def _format_size(num_bytes: int) -> str:
     return f"{size:.1f} TB"
 
 
-_LMSTUDIO_DEFAULT_BASE_URL = "http://localhost:1234/v1"
-
-
 def _is_lmstudio_endpoint(cfg) -> bool:
     """Whether the active config's base_url matches LM Studio's default
     local server — model.base_url can still point at any other
     OpenAI-compatible server (a custom local server, a hosted API), where
     LM-Studio-specific `lms` CLI shellouts wouldn't apply."""
-    return cfg.model_base_url.rstrip("/") == _LMSTUDIO_DEFAULT_BASE_URL
+    return is_lmstudio_endpoint(cfg.model_base_url)
 
 
 def _try_lmstudio_load(name: str, cfg) -> None:
@@ -1160,6 +1241,7 @@ def _reload_instructions(session: "AgentSession", workspace: Path) -> None:
         content=system_prompt(
             workspace, list(session.tools_by_name),
             _repo_overview(workspace), _project_memory(workspace), session.instructions,
+            _active_work_note(workspace),
         )
     )
 
@@ -1573,19 +1655,63 @@ def _handle_command(raw: str, session: "AgentSession", workspace: Path) -> bool:
     return False
 
 
+def _installed_version() -> str:
+    """The installed ai-coder package version (mirrors cli.py's `--version`,
+    duplicated rather than imported to avoid coupling this module to cli.py
+    for a three-line lookup)."""
+    try:
+        from importlib.metadata import version
+
+        return version("ai-coder")
+    except Exception:  # PackageNotFoundError, or running from a bare checkout
+        return "0+unknown"
+
+
+def _last_updated() -> str | None:
+    """Date of the last commit to the AICoder source tree itself (not the
+    user's project workspace) — there's no formally tagged/dated release
+    process today, so the last commit date is the closest honest proxy.
+    Returns None (silently omitted from the banner) if git or a repo isn't
+    available, e.g. installed from a wheel with no .git directory."""
+    root = Path(__file__).resolve().parents[1]
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "log", "-1", "--format=%cd", "--date=short"],
+            capture_output=True, text=True, timeout=2,
+        )
+        return result.stdout.strip() or None
+    except Exception:
+        return None
+
+
 def _startup_banner(cfg, model_name: str, workspace: Path, session: "AgentSession") -> Panel:
     """The banner shown at session start — shared by the plain REPL and the TUI
-    so the two front-ends never drift out of sync with each other."""
-    return Panel.fit(
-        f"{BRAND} [dim]— local agentic coding assistant[/dim]\n"
-        f"[dim]Workspace:[/dim] {workspace}\n"
-        f"[dim]Model:[/dim]     {model_name}\n"
-        f"[dim]Dev Mode:[/dim]  {cfg.devmode_profile()} profile\n"
-        f"[dim]Tools:[/dim]     {', '.join(session.tools_by_name)}\n\n"
-        f"[dim]Describe a task in plain English, or '/plan <goal>' for a multi-step build.\n"
-        f"'/help' for commands · '/exit' to quit.[/dim]",
-        border_style="cyan",
+    so the two front-ends never drift out of sync with each other. Two parts:
+    identity/version/workspace up top, a rotating tip + tool highlights below."""
+    host = socket.gethostname().removesuffix(".local")
+    updated = _last_updated()
+    version_line = f"AICoder [bold]v{_installed_version()}[/bold]" + (
+        f" [dim]· updated {updated}[/dim]" if updated else ""
     )
+    tools_block = "\n".join(
+        f"  [bold cyan]•[/bold cyan] [bold]{name}[/bold] [dim]— {desc}[/dim]"
+        for name, desc in TOOL_HIGHLIGHTS
+    )
+    tip = random.choice(STARTUP_TIPS)
+
+    body = (
+        f"[bold]Welcome, {host}[/bold]\n\n"
+        f"{LOGO}\n\n"
+        f"{version_line}\n"
+        f"[dim]📁 Workspace:[/dim] {workspace}\n"
+        f"[dim]🧠 Model:[/dim]     {model_name}  [dim]· Dev Mode:[/dim] {cfg.devmode_profile()} profile\n"
+        f"\n[dim]{'─' * 43}[/dim]\n\n"
+        f"[bold yellow1]💡 Tip:[/bold yellow1] {tip}\n\n"
+        f"[bold]Top tools[/bold]\n"
+        f"{tools_block}\n\n"
+        f"[dim]'/help' for commands · '/exit' to quit.[/dim]"
+    )
+    return Panel.fit(body, border_style="cyan")
 
 
 def run_agent_repl(workspace: Path, continue_session: bool = False) -> None:
@@ -1631,6 +1757,9 @@ def run_agent_repl(workspace: Path, continue_session: bool = False) -> None:
             console.print("[dim]📄 Loaded project instructions (AICODER.md).[/dim]")
         if planner.has_active_plan():
             console.print("[dim]An in-progress plan exists for this project — type '/resume' to continue it.[/dim]")
+        if _has_devmode_session(workspace):
+            console.print("[dim]A Developer Mode design exists for this project — type "
+                          "'/dev status' to see progress, or '/dev' to resume it.[/dim]")
 
         while True:
             console.print()
