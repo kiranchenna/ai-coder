@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/icon.png" alt="AICoder logo" width="128" height="128">
+  <img src="https://raw.githubusercontent.com/kiranchenna/ai-coder/main/assets/icon.png" alt="AICoder logo" width="128" height="128">
 </p>
 
 <h1 align="center">AICoder ✨</h1>

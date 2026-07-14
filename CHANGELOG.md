@@ -1,5 +1,11 @@
 # Changelog
 
+## 4.0.1 - 2026-07-14
+- **Fix broken logo on the PyPI project page.** The README's logo used a
+  relative `assets/icon.png` path, which GitHub resolves against the repo but
+  PyPI's rendered page can't (no file server backing it there) — now an
+  absolute `raw.githubusercontent.com` URL, which works in both places.
+
 ## 4.0.0 - 2026-07-14
 - **Startup banner redesign, LM Studio auto-start, and active-work session
   awareness.**
