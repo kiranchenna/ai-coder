@@ -3,7 +3,7 @@ requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ai-coder"
+name = "local-aicoder"
 version = "4.0.0"
 description = "Local, offline agentic coding assistant — plans, edits, runs, and verifies"
 readme = "README.md"

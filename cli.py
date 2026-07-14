@@ -24,7 +24,7 @@ def _version() -> str:
     try:
         from importlib.metadata import version
 
-        return version("ai-coder")
+        return version("local-aicoder")
     except Exception:  # PackageNotFoundError, or running from a bare checkout
         return "0+unknown"
 

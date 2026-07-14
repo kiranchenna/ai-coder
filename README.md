@@ -5,8 +5,8 @@
 <h1 align="center">AICoder ✨</h1>
 
 <p align="center">
-  <a href="https://pypi.org/project/ai-coder/"><img src="https://img.shields.io/pypi/v/ai-coder.svg" alt="PyPI version"></a>
-  <a href="https://pypi.org/project/ai-coder/"><img src="https://img.shields.io/pypi/pyversions/ai-coder.svg" alt="Python versions"></a>
+  <a href="https://pypi.org/project/local-aicoder/"><img src="https://img.shields.io/pypi/v/local-aicoder.svg" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/local-aicoder/"><img src="https://img.shields.io/pypi/pyversions/local-aicoder.svg" alt="Python versions"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
 </p>
 
@@ -110,14 +110,18 @@ your message
 ### From PyPI
 
 ```bash
-pip install ai-coder
+pip install local-aicoder
 ```
 
 Optional extras:
 
 ```bash
-pip install "ai-coder[mcp]"     # MCP server support
+pip install "local-aicoder[mcp]"     # MCP server support
 ```
+
+> The PyPI package is named `local-aicoder` (PyPI's typosquat guard blocked
+> the shorter `ai-coder` — it collides, once normalized, with an unrelated
+> existing package). The command you actually run is `aicoder` either way.
 
 ### From source (development)
 
@@ -806,7 +810,7 @@ A global `~/.aicoder/AICODER.md` is also loaded (applies to every project), with
 Connect [Model Context Protocol](https://modelcontextprotocol.io/) servers and their tools become available to the agent alongside the built-ins — a database, GitHub, a browser, your own server, anything that speaks the protocol.
 
 ```bash
-pip install "ai-coder[mcp]"
+pip install "local-aicoder[mcp]"
 ```
 
 ```yaml
@@ -998,7 +1002,7 @@ Being honest about the tradeoffs:
 - **"Cannot reach the configured model server"** — `aicoder` already tries to auto-start LM Studio's local server and load your configured model before showing this; if you still see it, either LM Studio itself isn't installed (get it from [lmstudio.ai](https://lmstudio.ai/)), or `base_url` in your config points somewhere else.
 - **`--selftest` says the model can't call tools** — switch to a stronger model (`aicoder --model qwen2.5-coder-7b-instruct`).
 - **Web research / `read_document` says it couldn't ingest** — download an embedding model in LM Studio (e.g. `nomic-ai/nomic-embed-text-v1.5-GGUF`) and set `knowledge.embedding_model` if it's not the default.
-- **MCP servers don't load** — install the extra (`pip install "ai-coder[mcp]"`) and check the server `command`/`args` in your config.
+- **MCP servers don't load** — install the extra (`pip install "local-aicoder[mcp]"`) and check the server `command`/`args` in your config.
 - **"langchain-openai isn't installed"** — `pip install langchain-openai` (this is a core dependency, so it should already be present — a missing install usually means a broken environment).
 - **Edits get declined / the agent loops** — small models sometimes struggle; rephrase, or switch to a larger model.
 - **See your settings** — `aicoder --config`.
