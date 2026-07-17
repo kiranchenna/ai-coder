@@ -68,6 +68,12 @@ LOGO = (
     "[bold cyan]█   █  █ [/bold cyan] [bold yellow1]█     █   █ █   █ █     █  █ [/bold yellow1]\n"
     "[bold cyan]█   █ ███[/bold cyan] [bold yellow1] ████  ███  ████  █████ █   █[/bold yellow1]"
 )
+# LOGO's actual rendered (markup-stripped) cell width — one row's worth of
+# block characters, measured directly rather than computed from the string
+# above (which also contains markup tag characters that aren't part of the
+# visible width). Used to keep the startup banner's left column from ever
+# squeezing narrower than the logo itself.
+_LOGO_WIDTH = 39
 
 # The five tools shown on the startup banner — a curated highlight reel (the
 # full set is longer; see agent/tools.py), picked to sketch the core
@@ -107,6 +113,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/history", "list past sessions for this workspace, or view one in detail"),
     ("/status", "show workspace, model, provider, and dev-mode profile"),
     ("/context", "show conversation size vs. the compaction budget"),
+    ("/context-length", "view or change the model's context window (default 131072 / 128k)"),
     ("/compact", "summarize older turns now (usually automatic)"),
     ("/permissions", "view or change shell/file confirmation modes"),
     ("/review", "ask the agent to review the current git diff"),
@@ -353,6 +360,7 @@ class AgentSession:
         self._interrupt.clear()
         self._current_turn_actions = []
         self._compact_history_if_needed()
+        _ensure_model_loaded()
         self.messages.append(HumanMessage(content=user_input))
 
         answer = ""
@@ -514,7 +522,14 @@ class AgentSession:
         )
         return self.send(augmented)
 
+    # Bound on retrying an empty turn (see _run_steps case 3a) — small and
+    # non-zero: one retry gives a model that stalled a real second chance,
+    # but this must never become an unbounded loop of empty turns burning
+    # more time on a model that's simply never going to answer.
+    MAX_EMPTY_RESPONSE_RETRIES = 2
+
     def _run_steps(self) -> str:
+        empty_retries = 0
         for _ in range(MAX_STEPS):
             if self._interrupt.is_set():
                 raise _TurnInterrupted()
@@ -562,11 +577,44 @@ class AgentSession:
                 )
                 continue
 
-            # 3) Genuine final answer.
-            self.messages.append(ai)
             text = content.strip()
+
+            # 3a) A genuinely empty turn — no tool call, no text at all. Some
+            # local "thinking" models (confirmed live: Qwen3.5 via LM Studio,
+            # a 159s turn that produced *nothing*) can spend the entire turn
+            # on internal reasoning this app has no way to see — LangChain's
+            # ChatOpenAI explicitly does not extract non-standard
+            # `reasoning_content` deltas (see its own docstring) — and then
+            # just stop without ever committing to an answer or a tool call.
+            # Retrying blind risks repeating the exact same failure, so
+            # nudge it to actually commit first, a small bounded number of
+            # times rather than accepting silence as "done". The empty
+            # AIMessage itself is dropped (not appended) — it has nothing
+            # useful in it, and a blank prior assistant turn only risks
+            # confusing the model further on retry.
+            if not text and empty_retries < self.MAX_EMPTY_RESPONSE_RETRIES:
+                empty_retries += 1
+                self.messages.append(HumanMessage(
+                    content="Your last turn produced no answer and called no tool. "
+                    "Don't just think about it — call one of your tools now, or give "
+                    "a direct answer, in this turn."
+                ))
+                continue
+
+            # 3b) Genuine final answer — or gave up after retries.
+            self.messages.append(ai)
             console.print()
-            console.print(Markdown(text) if text else "[dim](no further response)[/dim]")
+            if text:
+                console.print(Markdown(text))
+            elif empty_retries:
+                console.print(
+                    f"[yellow](No answer or tool call after {empty_retries} retry "
+                    "attempt(s) — the model may be spending the whole turn on "
+                    "internal reasoning this app can't see. Try a smaller/more "
+                    "specific request, or switch models with /model.)[/yellow]"
+                )
+            else:
+                console.print("[dim](no further response)[/dim]")
             self.hooks.stop(self.workspace)
             self.last_turn_complete = True
             return text
@@ -823,6 +871,52 @@ def _try_lmstudio_load(name: str, cfg) -> None:
         switch_lmstudio_model(name)
     except Exception as e:
         console.print(f"[yellow]⚠ Couldn't load '{name}' in LM Studio.[/yellow] [dim]{e}[/dim]")
+
+
+def _try_lmstudio_unload(name: str, cfg) -> None:
+    """Best-effort `lms unload` on a clean `aicoder` exit — gated on
+    _is_lmstudio_endpoint like every other LM-Studio-specific shellout, and
+    fully silent on failure (unlike _try_lmstudio_load's warning): the app
+    is already on its way out, so a stuck/slow/failed unload must never
+    print a warning or block actually exiting — LM Studio's own idle-TTL
+    (see switch_lmstudio_model) is still there as a fallback either way."""
+    if not _is_lmstudio_endpoint(cfg):
+        return
+    from core.model import unload_lmstudio_model
+
+    try:
+        unload_lmstudio_model(name)
+    except Exception:
+        pass
+
+
+def _ensure_model_loaded() -> None:
+    """Called at the start of every AgentSession.send() — if the configured
+    model has idle-unloaded (our own TTL — see switch_lmstudio_model — or a
+    manual unload) since this session started, reload it properly before
+    this turn.
+
+    This matters beyond convenience: LM Studio itself already auto-loads a
+    downloaded-but-unloaded model on the first request that references it —
+    confirmed live, this is exactly what would otherwise happen here. But
+    that implicit auto-load uses LM Studio's *own* default context length
+    and no TTL, completely ignoring config.yaml's model.context_length —
+    silently reintroducing the exact "tokens to keep... greater than the
+    context length" crash switch_lmstudio_model exists to prevent, just one
+    idle-timeout later. Checking first (is_lmstudio_model_loaded, read-only)
+    keeps this a no-op — no extra console noise — on the overwhelmingly
+    common case where the model's still loaded from the last turn."""
+    from core.config import get_config
+
+    cfg = get_config()
+    if not _is_lmstudio_endpoint(cfg):
+        return
+    from core.model import is_lmstudio_model_loaded
+
+    if is_lmstudio_model_loaded(cfg.model_name):
+        return
+    console.print(f"[dim]⏳ '{cfg.model_name}' isn't loaded — starting it…[/dim]")
+    _try_lmstudio_load(cfg.model_name, cfg)
 
 
 def _switch_model(name: str, session: "AgentSession") -> None:
@@ -1284,6 +1378,38 @@ def _handle_context_command(session: "AgentSession") -> None:
     ))
 
 
+# ── /context-length — view/change the model's context window ───────────────────
+
+def _handle_context_length_command(arg: str, session: "AgentSession") -> None:
+    from core.config import get_config
+
+    cfg = get_config()
+    if not arg:
+        console.print(Panel(
+            f"Context length: [bold]{cfg.model_context_length}[/bold] tokens [dim](default 131072 / 128k)[/dim]\n\n"
+            "[dim]/context-length <n> — change it, saved as your default. If LM Studio's the "
+            "active endpoint, the current model is reloaded at the new window immediately — "
+            "no restart needed.[/dim]",
+            title="[cyan]Context length[/cyan]", border_style="cyan",
+        ))
+        return
+    try:
+        length = int(arg)
+        if length <= 0:
+            raise ValueError
+    except ValueError:
+        console.print("[yellow]Usage: /context-length <positive integer>[/yellow]")
+        return
+
+    cfg.set_model_context_length(length)
+    # This session's compaction budget is derived from context_length once,
+    # in AgentSession.__init__ — update it here too, or the change wouldn't
+    # apply until a restart despite the config write succeeding.
+    session._history_budget = max(8_000, length * 2)
+    console.print(f"[green]✓ Context length set to {length} and saved as your default.[/green]")
+    _try_lmstudio_load(cfg.model_name, cfg)  # no-op + silent unless LM Studio's the active endpoint
+
+
 # ── /compact — manually trigger the same compaction that runs automatically ─────
 
 def _handle_compact_command(session: "AgentSession") -> None:
@@ -1388,7 +1514,7 @@ def _handle_bug_command() -> None:
 def _handle_doctor_command() -> None:
     from core.model import selftest
 
-    selftest()
+    selftest(console=console)
 
 
 # ── /export — dump the conversation transcript to a file ───────────────────────
@@ -1519,6 +1645,8 @@ def _handle_command(raw: str, session: "AgentSession", workspace: Path) -> bool:
                 "in detail (prompts, actions, diffs)\n"
                 "[bold]/status[/bold]       show workspace, model, provider, and dev-mode profile\n"
                 "[bold]/context[/bold]      show conversation size vs. the compaction budget\n"
+                r"[bold]/context-length \[n][/bold] view or change the model's context window "
+                "(default 131072 / 128k) — reloads the current model in LM Studio immediately\n"
                 "[bold]/compact[/bold]      summarize older turns now (usually automatic)\n"
                 "[bold]/permissions[/bold]  view or change shell/file confirmation modes\n"
                 "[bold]/review[/bold]       ask the agent to review the current git diff\n"
@@ -1553,6 +1681,8 @@ def _handle_command(raw: str, session: "AgentSession", workspace: Path) -> bool:
         _handle_status_command(session, workspace)
     elif name == "context":
         _handle_context_command(session)
+    elif name == "context-length":
+        _handle_context_length_command(arg, session)
     elif name == "compact":
         _handle_compact_command(session)
     elif name == "permissions":
@@ -1684,10 +1814,32 @@ def _last_updated() -> str | None:
         return None
 
 
-def _startup_banner(cfg, model_name: str, workspace: Path, session: "AgentSession") -> Panel:
+def _startup_banner(
+    cfg, model_name: str, workspace: Path, session: "AgentSession",
+    size: tuple[int, int] | None = None,
+) -> Panel:
     """The banner shown at session start — shared by the plain REPL and the TUI
-    so the two front-ends never drift out of sync with each other. Two parts:
-    identity/version/workspace up top, a rotating tip + tool highlights below."""
+    so the two front-ends never drift out of sync with each other. Full
+    terminal width (like Claude Code's own box) but content-sized height —
+    an earlier version stretched it to fill the whole screen with blank
+    padding, which swallowed the entire visible chat area before a single
+    message had even been sent (confirmed live, reverted). Two columns side
+    by side in one row (Claude Code's own layout): identity/version/
+    workspace on the left (~1/3 width), a rotating tip + tool highlights on
+    the right (the rest) — via a borderless Table.grid rather than stacking
+    them, since a plain multi-line string can't put two blocks side by side.
+    The left column's min_width is pinned to the LOGO's actual width rather
+    than trusting the 1/3 ratio alone: on a narrow terminal a strict ratio
+    would squeeze the column below the logo's width and Rich would wrap the
+    block-letter art mid-glyph, mangling it — min_width guarantees it always
+    has room, and only cedes toward exactly 1/3 once the terminal is wide
+    enough for that to exceed the minimum. `size` is the caller's real
+    terminal/app (width, height) — only the width is used now, but callers
+    still pass both since neither this module's own patched `console`
+    (swapped out under the TUI — see agent/tui.py's _patch_consoles) nor a
+    hardcoded guess would be accurate from here."""
+    width, _height = size or (100, 30)
+    width = max(60, width)
     host = socket.gethostname().removesuffix(".local")
     updated = _last_updated()
     version_line = f"AICoder [bold]v{_installed_version()}[/bold]" + (
@@ -1699,19 +1851,43 @@ def _startup_banner(cfg, model_name: str, workspace: Path, session: "AgentSessio
     )
     tip = random.choice(STARTUP_TIPS)
 
-    body = (
+    left = (
         f"[bold]Welcome, {host}[/bold]\n\n"
         f"{LOGO}\n\n"
         f"{version_line}\n"
         f"[dim]📁 Workspace:[/dim] {workspace}\n"
-        f"[dim]🧠 Model:[/dim]     {model_name}  [dim]· Dev Mode:[/dim] {cfg.devmode_profile()} profile\n"
-        f"\n[dim]{'─' * 43}[/dim]\n\n"
+        f"[dim]🧠 Model:[/dim] {model_name}\n"
+        f"[dim]Dev Mode:[/dim] {cfg.devmode_profile()} profile"
+    )
+    right = (
         f"[bold yellow1]💡 Tip:[/bold yellow1] {tip}\n\n"
         f"[bold]Top tools[/bold]\n"
         f"{tools_block}\n\n"
         f"[dim]'/help' for commands · '/exit' to quit.[/dim]"
     )
-    return Panel.fit(body, border_style="cyan")
+
+    from rich.table import Table
+
+    # Explicit widths, not ratio=1/ratio=2 — confirmed live that Rich's
+    # ratio-column sizing ignores min_width entirely once expand=True (a
+    # 1:2 ratio split at width=80 measured out to 27:53, nowhere near the
+    # requested 41-wide floor), so it can't be trusted to protect the logo
+    # on its own. width - 4 accounts for the panel's border + padding
+    # (confirmed live to be exactly 4, not assumed).
+    inner_width = width - 4
+    left_width = max(_LOGO_WIDTH + 2, inner_width // 3)
+    right_width = inner_width - left_width - 2  # 2 = padding between columns
+    grid = Table.grid(expand=True, padding=(0, 2, 0, 0))
+    # overflow="fold": a Rich Table column's default overflow is "ellipsis"
+    # — confirmed live this silently *truncates* a long line from the end
+    # rather than wrapping it, which on a narrow terminal would cut the
+    # workspace path off right where the actual project directory name is
+    # (the one thing that distinguishes it from any other workspace).
+    # "fold" wraps onto additional lines instead — nothing gets hidden.
+    grid.add_column(width=left_width, overflow="fold")
+    grid.add_column(width=right_width, overflow="fold")
+    grid.add_row(left, right)
+    return Panel(grid, border_style="cyan", width=width)
 
 
 def run_agent_repl(workspace: Path, continue_session: bool = False) -> None:
@@ -1744,12 +1920,23 @@ def run_agent_repl(workspace: Path, continue_session: bool = False) -> None:
     # unaffected. hide_cursor=False: unlike those apps, input here is normal
     # line-buffered Prompt.ask(), which needs a visible cursor to type against.
     with console.screen(hide_cursor=False):
-        console.print(_startup_banner(cfg, model_name, workspace, session))
+        console.print(_startup_banner(cfg, model_name, workspace, session, size=console.size))
 
         if continue_session:
+            # load_transcript() alone restores the conversation into
+            # session.messages (so the *model* has full context on the
+            # next turn) but never re-displays any of it — see the TUI's
+            # matching comment in agent/tui.py's on_mount for the live
+            # confirmation this looked exactly like a brand new session
+            # from the user's own perspective. Replay the actual prior
+            # turns (same renderer /history <n> uses) so you can see what
+            # you're continuing.
+            prior_session_path = session._latest_session_file()
             if session.load_transcript():
                 console.print(f"[dim]↺ Resumed the previous conversation "
-                              f"({len(session.messages) - 1} message(s)).[/dim]")
+                              f"({len(session.messages) - 1} message(s)):[/dim]")
+                if prior_session_path is not None:
+                    _render_session_detail(prior_session_path)
             else:
                 console.print("[dim]No previous conversation found for this workspace — "
                               "starting fresh.[/dim]")
@@ -1792,3 +1979,4 @@ def run_agent_repl(workspace: Path, continue_session: bool = False) -> None:
                 console.print(f"[dim]⏱ {time.monotonic() - start:.1f}s[/dim]")
 
         session.mcp.shutdown()
+        _try_lmstudio_unload(cfg.model_name, cfg)

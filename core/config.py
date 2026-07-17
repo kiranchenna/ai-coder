@@ -46,7 +46,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "api_key": "",
         "temperature": 0.3,
         "temperature_precise": 0.1,
-        "context_length": 16384,
+        "context_length": 131072,  # 128k
     },
     "shell": {
         # Confirmation mode for shell commands:
@@ -210,7 +210,20 @@ class Config:
 
     @property
     def model_context_length(self) -> int:
-        return int(self._data["model"].get("context_length", 16384))
+        return int(self._data["model"].get("context_length", 131072))
+
+    def set_model_context_length(self, length: int) -> None:
+        """Update the configured context length and persist to disk. Purely
+        a config write — actually reloading the model in LM Studio at the
+        new window (the "necessary action" a change like this needs to take
+        effect) is the caller's job; see agent/loop.py's
+        _handle_context_length_command, which also updates the *current*
+        session's compaction budget so the change applies immediately
+        rather than only on the next restart."""
+        if length <= 0:
+            raise ValueError(f"Invalid context length: {length!r}. Must be a positive integer.")
+        self._data["model"]["context_length"] = length
+        save_config(self._data)
 
     @property
     def vision_model(self) -> str:

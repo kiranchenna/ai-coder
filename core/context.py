@@ -9,6 +9,7 @@ contents are dumped here.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from tools.file_tools import file_tree
@@ -69,21 +70,27 @@ class WorkspaceContext:
         if not self._languages:
             lang_counts: dict[str, int] = {}
             count = 0
-            for path in self.root.rglob("*"):
-                if not path.is_file():
-                    continue
-                if any(part in ignore_dirs for part in path.parts):
-                    continue
-                if path.suffix in ignore_exts:
-                    continue
-                if ai_ignore:
-                    rel = str(path.relative_to(self.root)).replace("\\", "/")
-                    if ai_ignore.match_file(rel):
+            # os.walk + pruning dirnames in place, not Path.rglob("*") — rglob
+            # has no way to skip descending into a directory, so it was
+            # physically walking every file under node_modules/.git/venv/...
+            # before ignore_dirs ever got a chance to filter anything out.
+            # Confirmed live: pointed at a large/unrelated tree (a home
+            # directory), this took well over a minute before every other
+            # part of startup (which is fast) even got a turn.
+            for dirpath, dirnames, filenames in os.walk(self.root):
+                dirnames[:] = [d for d in dirnames if d not in ignore_dirs]
+                for filename in filenames:
+                    path = Path(dirpath) / filename
+                    if path.suffix in ignore_exts:
                         continue
-                lang = _LANGUAGE_MAP.get(path.suffix.lower())
-                if lang:
-                    lang_counts[lang] = lang_counts.get(lang, 0) + 1
-                count += 1
+                    if ai_ignore:
+                        rel = str(path.relative_to(self.root)).replace("\\", "/")
+                        if ai_ignore.match_file(rel):
+                            continue
+                    lang = _LANGUAGE_MAP.get(path.suffix.lower())
+                    if lang:
+                        lang_counts[lang] = lang_counts.get(lang, 0) + 1
+                    count += 1
             self._languages = dict(sorted(lang_counts.items(), key=lambda x: -x[1]))
             self._file_count = count
 

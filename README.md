@@ -860,7 +860,7 @@ model:
   api_key: ""                     # blank for local servers with no auth
   temperature: 0.3                # conversational
   temperature_precise: 0.1        # for precise/code output
-  context_length: 16384           # num_ctx; also drives history-compaction budget
+  context_length: 131072          # num_ctx (128k); also drives history-compaction budget — change with /context-length in-session
 
 shell:
   confirmation: always            # always | smart | never

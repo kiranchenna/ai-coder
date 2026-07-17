@@ -100,6 +100,53 @@ def test_context_flags_when_over_budget(capsys):
     assert "will compact" in capsys.readouterr().out
 
 
+# ── /context-length ──────────────────────────────────────────────────────────
+
+def test_context_length_no_arg_shows_current_value(tmp_path, monkeypatch, capsys):
+    from agent.loop import _handle_context_length_command
+
+    _isolate_config(monkeypatch, tmp_path)
+    _handle_context_length_command("", _session())
+    assert "131072" in capsys.readouterr().out
+
+
+def test_context_length_sets_value_and_updates_session_budget(tmp_path, monkeypatch, capsys):
+    from agent.loop import _handle_context_length_command
+    from core.config import get_config
+
+    _isolate_config(monkeypatch, tmp_path)
+    reloaded = []
+    monkeypatch.setattr("agent.loop._try_lmstudio_load",
+                        lambda name, cfg: reloaded.append(name))
+
+    session = _session(_history_budget=10_000)
+    _handle_context_length_command("32768", session)
+
+    assert get_config().model_context_length == 32768
+    assert session._history_budget == 32768 * 2  # updated for THIS session, not just on disk
+    out = capsys.readouterr().out
+    assert "32768" in out and "saved" in out
+    assert reloaded == [get_config().model_name]  # the current model reloaded, not left stale
+
+
+def test_context_length_invalid_value_shows_usage(tmp_path, monkeypatch, capsys):
+    from agent.loop import _handle_context_length_command
+    from core.config import get_config
+
+    _isolate_config(monkeypatch, tmp_path)
+    before = get_config().model_context_length
+    reloaded = []
+    monkeypatch.setattr("agent.loop._try_lmstudio_load",
+                        lambda name, cfg: reloaded.append(name))
+
+    for bad in ("abc", "0", "-5"):
+        _handle_context_length_command(bad, _session())
+        assert "Usage" in capsys.readouterr().out
+
+    assert get_config().model_context_length == before  # untouched
+    assert reloaded == []  # never reaches the reload step
+
+
 # ── /compact ─────────────────────────────────────────────────────────────────
 
 def test_compact_empty_conversation(capsys):
@@ -258,9 +305,31 @@ def test_doctor_calls_selftest(monkeypatch):
     from agent.loop import _handle_doctor_command
 
     called = []
-    monkeypatch.setattr(model_mod, "selftest", lambda: called.append(1) or True)
+    monkeypatch.setattr(model_mod, "selftest", lambda console=None: called.append(console) or True)
     _handle_doctor_command()
-    assert called == [1]
+    assert len(called) == 1
+
+
+def test_doctor_passes_the_patchable_module_console_not_a_fresh_one(monkeypatch):
+    """Live-reproduced bug: selftest() used to always build its own SafeConsole
+    internally, so /doctor's actual pass/fail output wrote straight to real
+    stdout instead of the chat log — invisible (or screen-corrupting) under
+    the TUI's alternate screen buffer, since only agent.loop.console gets
+    swapped by _patch_consoles when the TUI mounts."""
+    import agent.loop as loop_mod
+    import core.model as model_mod
+
+    captured = {}
+    sentinel_console = object()
+
+    monkeypatch.setattr(
+        model_mod, "selftest",
+        lambda console=None: captured.setdefault("console", console) or True,
+    )
+    monkeypatch.setattr(loop_mod, "console", sentinel_console)
+    loop_mod._handle_doctor_command()
+
+    assert captured["console"] is sentinel_console
 
 
 # ── /export ──────────────────────────────────────────────────────────────────

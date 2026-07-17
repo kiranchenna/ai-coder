@@ -27,6 +27,23 @@ def _isolate_memory_dir(monkeypatch, tmp_path):
     monkeypatch.setattr("core.config.MEMORY_DIR", tmp_path / "memory")
 
 
+@pytest.fixture(autouse=True)
+def _assume_model_already_loaded(monkeypatch):
+    """AgentSession.send() now calls _ensure_model_loaded() first (see
+    agent/loop.py), which shells out to `lms ps` via
+    core.model.is_lmstudio_model_loaded — a REAL subprocess call, since
+    AICoderApp builds a real AgentSession against the real, unmocked config
+    (which — DEFAULT_CONFIG — points at LM Studio's actual default
+    endpoint). Several tests here swap in a scripted `session.llm` but still
+    go through the real send(), so without this every one of them would
+    depend on `lms` actually being installed and reachable on whatever
+    machine runs the suite — autouse so that dependency never leaks in by
+    default."""
+    import core.model as model_mod
+
+    monkeypatch.setattr(model_mod, "is_lmstudio_model_loaded", lambda name: True)
+
+
 def _rendered_text(rich_log: RichLog) -> str:
     """Flatten a RichLog's current lines back into plain text for assertions."""
     return "\n".join("".join(seg.text for seg in strip) for strip in rich_log.lines)
@@ -108,8 +125,59 @@ async def test_app_mounts_and_shows_the_banner():
         rich_log = app.query_one("#chat", RichLog)
         text = _rendered_text(rich_log)
         assert "AICoder" in text
-        assert str(ws) in text
+        # ws.name, not the full str(ws) — the banner's now a narrower
+        # two-column layout (see _startup_banner) that wraps a long
+        # absolute path (macOS temp dirs run ~60+ chars) across lines
+        # rather than truncating it (overflow="fold", not the default
+        # "ellipsis" — see _startup_banner's comment on why), so the full
+        # path is still present but not as one contiguous substring.
+        assert ws.name in text
         assert app.query_one("#prompt", Input).has_focus
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(80, 24), (100, 30), (120, 40), (160, 50)])
+async def test_banner_logo_never_gets_mangled_by_a_deferred_render_race(size):
+    """Live-reproduced bug: RichLog.write() defers rendering until its own
+    size is known, and — confirmed live — locks onto the *first* resize
+    event it ever receives (its on_resize), which can be an early,
+    intermediate width narrower than the final layout. Rendering the banner
+    with no explicit write(width=...) let write() *measure* the Panel's own
+    declared width, then *shrink* it down to that stale width — which
+    doesn't reflow a fixed-pixel-width Table gracefully: it mangled the
+    block-letter logo mid-glyph. Every logo row must render as one intact,
+    unbroken line, at every app size, not just the one Pilot happens to
+    settle on fastest."""
+    import re
+
+    from agent.loop import LOGO
+
+    ws = Path(tempfile.mkdtemp())
+    app = AICoderApp(ws)
+    async with app.run_test(size=size) as pilot:
+        await pilot.pause()
+        text = _rendered_text(app.query_one("#chat", RichLog))
+        for row in LOGO.split("\n"):
+            plain_row = re.sub(r"\[.*?\]", "", row).strip()
+            assert plain_row in text, f"logo row mangled at app size {size}: {plain_row!r}"
+
+
+@pytest.mark.asyncio
+async def test_idle_status_bar_shows_workspace_model_and_context_usage():
+    """A persistent bottom status line (like Claude Code's) — where we are,
+    what model's driving, and how full the context window is — replacing
+    the "Thinking…" indicator whenever a turn isn't in flight."""
+    from textual.widgets import Static
+
+    ws = Path(tempfile.mkdtemp())
+    app = AICoderApp(ws)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.pause(0.4)  # let the 0.3s status-tick interval fire
+        text = str(app.query_one("#status", Static).render())
+        assert ws.name in text
+        assert app.session.llm is not None  # sanity: a session really exists
+        assert "ctx" in text and "%" in text
 
 
 @pytest.mark.asyncio
@@ -152,6 +220,13 @@ async def test_continue_session_resumes_a_previous_conversation():
         from langchain_core.messages import HumanMessage
         human_messages = [m for m in second.session.messages if isinstance(m, HumanMessage)]
         assert any(m.content == "fix the login bug" for m in human_messages)
+        # Live-reported bug: load_transcript() alone restores session.messages
+        # (so the *model* has context) but never re-displays any of it — from
+        # the user's own perspective --continue looked exactly like a brand
+        # new session. The actual prior turn must be visibly replayed, not
+        # just silently available to the model.
+        assert "fix the login bug" in text
+        assert "Sure, on it." in text
 
 
 @pytest.mark.asyncio
@@ -193,6 +268,29 @@ async def test_exit_command_stops_the_app():
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert app.is_running is False
+
+
+@pytest.mark.asyncio
+async def test_exit_unloads_the_model_from_lmstudio(monkeypatch):
+    """A clean /exit is a deliberate "I'm done" signal — the model should be
+    unloaded right away rather than only via LM Studio's own idle-TTL (see
+    agent/loop.py's _try_lmstudio_unload)."""
+    import agent.loop as loop_mod
+
+    calls = []
+    monkeypatch.setattr(loop_mod, "_try_lmstudio_unload", lambda name, cfg: calls.append(name))
+
+    ws = Path(tempfile.mkdtemp())
+    app = AICoderApp(ws)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        inp = app.query_one("#prompt", Input)
+        inp.value = "/exit"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+    assert len(calls) == 1
 
 
 @pytest.mark.asyncio
@@ -256,6 +354,130 @@ async def _await_result(pilot, box: dict, attempts: int = 50) -> None:
     raise AssertionError("worker never returned a result")
 
 
+# ── ask_inline / ask_inline_confirm — /develop's discuss loop, no popups ────────
+# Live-reported bug: /develop's per-phase question and every yes/no
+# confirmation (apply fix?, auto-resync?) each opened as a popup showing
+# nothing but the bare phase id ("requirements") — confirmed genuinely
+# confusing, not just unpolished. ask_inline/ask_inline_confirm (agent/tui.py)
+# route the same questions through the main chat input instead, so a
+# /develop session reads like an ordinary conversation.
+
+async def _await_pending_reply(pilot, app, attempts: int = 50) -> None:
+    import asyncio
+
+    for _ in range(attempts):
+        await pilot.pause()
+        if app._pending_reply_future is not None:
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError("ask_inline/ask_inline_confirm never set a pending reply future")
+
+
+@pytest.mark.asyncio
+async def test_ask_inline_uses_the_chat_input_not_a_modal():
+    from agent.tui import ask_inline
+
+    ws = Path(tempfile.mkdtemp())
+    app = AICoderApp(ws)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        box: dict = {}
+        app.run_worker(
+            lambda: box.__setitem__(
+                "result", ask_inline("Your reply for the Requirements phase")
+            ),
+            thread=True,
+        )
+        await _await_pending_reply(pilot, app)
+
+        assert len(app.screen_stack) == 1  # no modal was pushed
+        text = _rendered_text(app.query_one("#chat", RichLog))
+        assert "Your reply for the Requirements phase" in text
+
+        inp = app.query_one("#prompt", Input)
+        inp.value = "sounds good, let's continue"
+        await pilot.press("enter")
+        await _await_result(pilot, box)
+
+        assert box["result"] == "sounds good, let's continue"
+        # The reply is echoed into the log like a normal message, not swallowed.
+        assert "sounds good, let's continue" in _rendered_text(app.query_one("#chat", RichLog))
+
+
+@pytest.mark.asyncio
+async def test_ask_inline_reply_is_never_treated_as_a_slash_command():
+    """A devmode reply that happens to look like a slash command (or just
+    the literal word the discuss loop listens for, e.g. "done") must be
+    delivered verbatim — never routed through _handle_command."""
+    from agent.tui import ask_inline
+
+    ws = Path(tempfile.mkdtemp())
+    app = AICoderApp(ws)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        box: dict = {}
+        app.run_worker(lambda: box.__setitem__("result", ask_inline("Reply?")), thread=True)
+        await _await_pending_reply(pilot, app)
+
+        inp = app.query_one("#prompt", Input)
+        inp.value = "/status"
+        await pilot.press("enter")
+        await _await_result(pilot, box)
+
+        assert box["result"] == "/status"
+
+
+@pytest.mark.asyncio
+async def test_ask_inline_confirm_parses_yes_no_via_chat_input():
+    from agent.tui import ask_inline_confirm
+
+    ws = Path(tempfile.mkdtemp())
+    app = AICoderApp(ws)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        box: dict = {}
+        app.run_worker(
+            lambda: box.__setitem__(
+                "result", ask_inline_confirm("Apply this fix to the Requirements decision?")
+            ),
+            thread=True,
+        )
+        await _await_pending_reply(pilot, app)
+        assert len(app.screen_stack) == 1  # no modal was pushed
+
+        inp = app.query_one("#prompt", Input)
+        inp.value = "n"
+        await pilot.press("enter")
+        await _await_result(pilot, box)
+
+        assert box["result"] is False
+
+
+@pytest.mark.asyncio
+async def test_ask_inline_confirm_blank_reply_uses_default():
+    from agent.tui import ask_inline_confirm
+
+    ws = Path(tempfile.mkdtemp())
+    app = AICoderApp(ws)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        box: dict = {}
+        app.run_worker(
+            lambda: box.__setitem__(
+                "result", ask_inline_confirm("Auto-resync the code?", default=True)
+            ),
+            thread=True,
+        )
+        await _await_pending_reply(pilot, app)
+
+        inp = app.query_one("#prompt", Input)
+        inp.value = ""
+        await pilot.press("enter")
+        await _await_result(pilot, box)
+
+        assert box["result"] is True
+
+
 @pytest.mark.asyncio
 async def test_confirm_bridge_yes_key():
     from rich.prompt import Confirm
@@ -271,6 +493,28 @@ async def test_confirm_bridge_yes_key():
         await pilot.press("y")
         await _await_result(pilot, box)
         assert box["result"] is True
+
+
+@pytest.mark.asyncio
+async def test_confirm_modal_is_a_small_centered_box_not_full_height():
+    """Live-reproduced bug: ConfirmModal's and PromptModal's outer Vertical
+    had no explicit `height` in their CSS, so it fell back to Textual's
+    default of 1fr (fill available space) instead of auto-sizing to
+    content — every confirmation/question during /develop's discuss loop
+    (one modal per phase, plus every apply-fix/auto-resync confirmation)
+    covered the entire screen instead of appearing as a small dialog."""
+    from rich.prompt import Confirm
+    from textual.containers import Vertical
+
+    ws = Path(tempfile.mkdtemp())
+    app = AICoderApp(ws)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        app.run_worker(lambda: Confirm.ask("Proceed?", default=False), thread=True)
+        await _await_modal(pilot, app)
+        vertical = app.screen.query_one(Vertical)
+        assert vertical.region.height < 15  # well under the full 30-row screen
+        await pilot.press("y")
 
 
 @pytest.mark.asyncio
@@ -340,6 +584,26 @@ async def test_prompt_bridge_returns_typed_text():
         await pilot.press("enter")
         await _await_result(pilot, box)
         assert box["result"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_prompt_modal_is_a_small_centered_box_not_full_height():
+    """Same bug as ConfirmModal (see test_confirm_modal_is_a_small_centered_
+    box_not_full_height) — this is the one /develop's per-phase discuss loop
+    actually uses (Prompt.ask(spec.id) for each phase's reply/done/skip/
+    revise/pause), so it's the one most visibly affected."""
+    from rich.prompt import Prompt
+    from textual.containers import Vertical
+
+    ws = Path(tempfile.mkdtemp())
+    app = AICoderApp(ws)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        app.run_worker(lambda: Prompt.ask("requirements", default=""), thread=True)
+        await _await_modal(pilot, app)
+        vertical = app.screen.query_one(Vertical)
+        assert vertical.region.height < 15  # well under the full 30-row screen
+        await pilot.press("enter")
 
 
 @pytest.mark.asyncio
@@ -1010,3 +1274,124 @@ async def test_slash_command_does_not_consume_pending_images():
         finally:
             for p in app.pending_images:
                 p.unlink(missing_ok=True)
+
+
+# ── ChatInput prompt history — Up/Down recall previous prompts, like Claude ────
+# Code's own input box (and a normal shell). Slash commands are used as the
+# test inputs below purely for speed/simplicity (no real model call needed
+# to exercise the history mechanism itself, which doesn't care what kind of
+# text was submitted).
+
+@pytest.mark.asyncio
+async def test_up_arrow_recalls_previous_prompts_newest_first():
+    from agent.tui import ChatInput
+
+    ws = Path(tempfile.mkdtemp())
+    app = AICoderApp(ws)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        inp = app.query_one("#prompt", ChatInput)
+        inp.focus()
+
+        for cmd in ("/status", "/help", "/tools"):
+            inp.value = cmd
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+        await pilot.press("up")
+        assert inp.value == "/tools"  # most recent first
+        await pilot.press("up")
+        assert inp.value == "/help"
+        await pilot.press("up")
+        assert inp.value == "/status"
+        await pilot.press("up")
+        assert inp.value == "/status"  # already at the oldest — stays put
+
+
+@pytest.mark.asyncio
+async def test_down_arrow_moves_forward_and_restores_the_draft():
+    from agent.tui import ChatInput
+
+    ws = Path(tempfile.mkdtemp())
+    app = AICoderApp(ws)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        inp = app.query_one("#prompt", ChatInput)
+        inp.focus()
+
+        for cmd in ("/status", "/help"):
+            inp.value = cmd
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+        inp.value = "an in-progress draft"
+        inp.cursor_position = len(inp.value)
+        await pilot.press("up")
+        assert inp.value == "/help"
+        await pilot.press("down")
+        assert inp.value == "an in-progress draft"  # restored, not lost
+
+
+@pytest.mark.asyncio
+async def test_history_skips_immediate_duplicate_submissions():
+    from agent.tui import ChatInput
+
+    ws = Path(tempfile.mkdtemp())
+    app = AICoderApp(ws)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        inp = app.query_one("#prompt", ChatInput)
+        inp.focus()
+
+        for _ in range(2):
+            inp.value = "/status"
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+        assert inp._history == ["/status"]  # not recorded twice in a row
+
+
+@pytest.mark.asyncio
+async def test_up_arrow_is_a_noop_with_no_history_yet():
+    from agent.tui import ChatInput
+
+    ws = Path(tempfile.mkdtemp())
+    app = AICoderApp(ws)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        inp = app.query_one("#prompt", ChatInput)
+        inp.focus()
+        await pilot.press("up")
+        assert inp.value == ""
+
+
+@pytest.mark.asyncio
+async def test_up_arrow_navigates_autocomplete_not_history_while_dropdown_open():
+    """The slash-command dropdown must keep first claim on Up/Down while
+    it's actually showing suggestions — prompt history must never steal
+    that (see ChatInput's docstring on why there's no conflict)."""
+    from agent.tui import ChatInput
+
+    ws = Path(tempfile.mkdtemp())
+    app = AICoderApp(ws)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        inp = app.query_one("#prompt", ChatInput)
+        inp.focus()
+
+        inp.value = "/status"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+        await pilot.press("/")
+        await pilot.pause()
+        await pilot.press("up")
+        await pilot.pause()
+
+        # The dropdown consumed the "up" — history browsing must not have
+        # started (the input still reads "/", not a recalled "/status").
+        assert inp.value == "/"

@@ -36,6 +36,7 @@ updates from worker threads automatically when using their public API).
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 from typing import Callable
@@ -181,6 +182,7 @@ class ConfirmModal(ModalScreen[bool]):
     }
     ConfirmModal > Vertical {
         width: auto;
+        height: auto;
         max-width: 70%;
         border: heavy $primary;
         background: $surface;
@@ -319,6 +321,7 @@ class PromptModal(ModalScreen[str]):
     }
     PromptModal > Vertical {
         width: auto;
+        height: auto;
         min-width: 40;
         max-width: 70%;
         border: heavy $primary;
@@ -433,6 +436,41 @@ def ask_choice(
     return app.call_from_thread(app.push_screen_wait, modal)
 
 
+def ask_inline(prompt: str, default: str = "") -> str:
+    """Ask a free-text question via the main chat input at the bottom,
+    instead of a popup — used by /develop's discuss loop (see
+    devmode/session.py's _ask), which asks a question at every phase; a
+    popup per question (confirmed live) reads as a confusing wall of
+    modals showing nothing but a bare phase id. Answering in the normal
+    chat input instead makes it read like an ordinary back-and-forth
+    conversation. Caller must check `is_tui_active()` first, and only call
+    this from a worker thread (like ask_choice)."""
+    app = _active_app
+    if app is None:
+        raise RuntimeError("ask_inline() called with no active TUI app")
+    return app.call_from_thread(app.wait_for_chat_reply, prompt, default)
+
+
+def ask_inline_confirm(prompt: str, default: bool = True) -> bool:
+    """Yes/no via the main chat input, instead of a popup — see ask_inline
+    (used by devmode/session.py's _confirm). Accepts y/yes/n/no
+    (case-insensitive); a blank reply or anything else falls back to
+    `default`, matching Confirm.ask's own behavior."""
+    app = _active_app
+    if app is None:
+        raise RuntimeError("ask_inline_confirm() called with no active TUI app")
+    hint = "yes" if default else "no"
+    reply = app.call_from_thread(
+        app.wait_for_chat_reply, f"{prompt} (y/n, default {hint})", "",
+    )
+    reply = reply.strip().lower()
+    if reply in ("y", "yes"):
+        return True
+    if reply in ("n", "no"):
+        return False
+    return default
+
+
 def signal_turn_started() -> None:
     """Called by AgentSession._invoke() when it starts streaming a response —
     shows the status bar's elapsed-time indicator. A plain attribute write:
@@ -545,7 +583,65 @@ class ChatInput(Input):
     grabclipboard() raises NotImplementedError (unlike a real "no image on
     the clipboard", which just returns None on every platform), which is
     handled below with a one-time notification pointing at the missing tool,
-    not a silent fall-through to text paste."""
+    not a silent fall-through to text paste.
+
+    Up/Down recall previous prompts, like Claude Code's own input box (and
+    a normal shell) — Textual's base Input has no binding for either by
+    default, and the slash-command autocomplete dropdown (see
+    SlashCommandAutoComplete below) only intercepts them itself while it's
+    actually showing suggestions, so there's no conflict."""
+
+    BINDINGS = [
+        Binding("up", "history_prev", "Previous prompt", show=False),
+        Binding("down", "history_next", "Next prompt", show=False),
+    ]
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._history: list[str] = []
+        self._history_index: int | None = None
+        # What was being typed (if anything) before the first Up press —
+        # restored once Down navigates back past the newest history entry,
+        # so browsing history never loses an in-progress draft.
+        self._history_draft: str = ""
+
+    def record_history(self, text: str) -> None:
+        """Called once per real submission (see AICoderApp.on_input_submitted)
+        — every kind (slash command, regular message, or a /develop-style
+        inline reply), skipping only blank input. Won't record an immediate
+        repeat of the last entry (matching normal shell-history behavior),
+        and always resets navigation back to "not currently browsing" so the
+        next Up starts from the newest entry, not wherever a previous
+        browsing session left off."""
+        if text and (not self._history or self._history[-1] != text):
+            self._history.append(text)
+        self._history_index = None
+        self._history_draft = ""
+
+    def action_history_prev(self) -> None:
+        if not self._history:
+            return
+        if self._history_index is None:
+            self._history_draft = self.value
+            self._history_index = len(self._history) - 1
+        elif self._history_index > 0:
+            self._history_index -= 1
+        else:
+            return  # already at the oldest entry
+        self.value = self._history[self._history_index]
+        self.cursor_position = len(self.value)
+
+    def action_history_next(self) -> None:
+        if self._history_index is None:
+            return  # not currently browsing history
+        if self._history_index < len(self._history) - 1:
+            self._history_index += 1
+            self.value = self._history[self._history_index]
+        else:
+            self._history_index = None
+            self.value = self._history_draft
+            self._history_draft = ""
+        self.cursor_position = len(self.value)
 
     def action_paste(self) -> None:
         from PIL import Image, ImageGrab
@@ -623,6 +719,10 @@ class AICoderApp(App):
         self._restore_consoles: Callable[[], None] | None = None
         self._restore_prompts: Callable[[], None] | None = None
         self._status_timer = None
+        # Set while ask_inline/ask_inline_confirm is waiting for a reply
+        # typed into the main chat input (not a popup) — see
+        # wait_for_chat_reply and on_input_submitted.
+        self._pending_reply_future: asyncio.Future | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -674,14 +774,49 @@ class AICoderApp(App):
             self.query_one("#prompt", Input).disabled = True
             return
 
-        rich_log.write(_startup_banner(cfg, cfg.model_name, self.workspace, self.session))
+        # rich_log.size is always (0, 0) here — confirmed live: RichLog
+        # defers every write() until its own size is known (see its
+        # docstring), so querying it this early in mount is pointless. Use
+        # the App's own size instead (reliable synchronously) minus
+        # RichLog's horizontal padding (`padding: 0 1` in its CSS above).
+        # Passing `width=` explicitly to write() below (rather than baking
+        # it only into the Panel and calling write() with no width) matters
+        # just as much: without it, write() falls back to *measuring* the
+        # Panel's own declared width, then *shrinking* it to whatever
+        # RichLog's scrollable_content_region.width happens to be at the
+        # moment the deferred write actually replays — which, confirmed
+        # live, locks onto the *first* resize event RichLog ever receives
+        # (see its on_resize), an early/intermediate one narrower than the
+        # final layout. That shrink doesn't reflow a Table with fixed pixel
+        # column widths gracefully — it mangles the block-letter logo mid
+        # glyph. An explicit write(width=...) is used directly as the
+        # render width, sidestepping that shrink path entirely.
+        banner_width = self.size.width - 2
+        banner_size = (banner_width, max(10, self.size.height - 6))
+        rich_log.write(
+            _startup_banner(cfg, cfg.model_name, self.workspace, self.session, size=banner_size),
+            width=banner_width,
+        )
 
         if self.continue_session:
+            # Confirmed live: load_transcript() alone restores the previous
+            # conversation into session.messages (so the *model* has full
+            # context on the next turn) but never re-displays any of it —
+            # from the user's own perspective --continue looked exactly
+            # like a brand new session, no different from not passing the
+            # flag at all, even though the context was genuinely there.
+            # _render_session_detail (the same renderer /history <n> uses)
+            # replays the actual prior turns into the chat log so you can
+            # see what you're continuing, not just trust that it's there.
+            prior_session_path = self.session._latest_session_file()
             if self.session.load_transcript():
                 rich_log.write(_safe_markup_text(
                     f"[dim]↺ Resumed the previous conversation "
-                    f"({len(self.session.messages) - 1} message(s)).[/dim]"
+                    f"({len(self.session.messages) - 1} message(s)):[/dim]"
                 ))
+                if prior_session_path is not None:
+                    from agent.loop import _render_session_detail
+                    _render_session_detail(prior_session_path)
             else:
                 rich_log.write("[dim]No previous conversation found for this workspace — "
                                "starting fresh.[/dim]")
@@ -699,6 +834,22 @@ class AICoderApp(App):
         self.query_one("#prompt", Input).focus()
         self._status_timer = self.set_interval(0.3, self._tick_status)
 
+    def _idle_status_line(self) -> str:
+        """Persistent bottom status — where we are, what model's driving,
+        and how full the context window is (like Claude Code's own status
+        line) — shown whenever a turn isn't in flight (see _tick_status)."""
+        from core.config import get_config
+        from agent.loop import _msg_chars
+
+        cfg = get_config()
+        used = sum(_msg_chars(m) for m in self.session.messages[1:])
+        budget = self.session._history_budget
+        pct = min(100, round(100 * used / budget)) if budget else 0
+        return (
+            f"[dim]📁 {self.workspace.name or self.workspace} · "
+            f"🧠 {cfg.model_name} · ctx {pct}%[/dim]"
+        )
+
     def _tick_status(self) -> None:
         import time
 
@@ -707,7 +858,7 @@ class AICoderApp(App):
         except NoMatches:
             return  # a tick landed mid-teardown, after on_unmount stopped us
         if self.turn_start_time is None:
-            status.update("")
+            status.update(self._idle_status_line() if self.session else "")
         else:
             elapsed = int(time.monotonic() - self.turn_start_time)
             status.update(f"[dim]✻ Thinking… ({elapsed}s · esc to interrupt)[/dim]")
@@ -730,12 +881,52 @@ class AICoderApp(App):
         _active_app = None
         if self.session is not None:
             self.session.mcp.shutdown()
+            from agent.loop import _try_lmstudio_unload
+            from core.config import get_config
+
+            _try_lmstudio_unload(get_config().model_name, get_config())
+
+    async def wait_for_chat_reply(self, prompt: str, default: str) -> str:
+        """Block (from ask_inline/ask_inline_confirm's calling worker
+        thread's perspective, via call_from_thread) until the user's next
+        message in the main chat input — used instead of a modal so a
+        /develop-style back-and-forth reads like an ordinary conversation.
+        Prints `prompt` into the chat log first so there's always visible
+        context for what's being asked (a call site's own preceding
+        console.print, if any, is a bonus, not something this relies on)."""
+        rich_log = self.query_one("#chat", RichLog)
+        rich_log.write(_safe_markup_text(f"[bold yellow]➤ {prompt}[/bold yellow]"))
+        future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        self._pending_reply_future = future
+        input_widget = self.query_one("#prompt", Input)
+        original_placeholder = input_widget.placeholder
+        input_widget.placeholder = "Type your reply and press Enter…"
+        try:
+            return await future
+        finally:
+            self._pending_reply_future = None
+            input_widget.placeholder = original_placeholder
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        if self.session is None:
-            return
         user = event.value.strip()
         event.input.value = ""
+        if isinstance(event.input, ChatInput):
+            event.input.record_history(user)
+        # A pending devmode reply (see wait_for_chat_reply) always wins —
+        # even over a slash command, since a freeform reply to "type: done
+        # · skip · revise · pause" should never be reinterpreted as one.
+        pending = self._pending_reply_future
+        if pending is not None and not pending.done():
+            from rich.markup import escape
+
+            rich_log = self.query_one("#chat", RichLog)
+            rich_log.write(_safe_markup_text(
+                f"[bold green]{self.workspace.name}>[/bold green] {escape(user)}"
+            ))
+            pending.set_result(user)
+            return
+        if self.session is None:
+            return
         if not user and not self.pending_images:
             return
         rich_log = self.query_one("#chat", RichLog)

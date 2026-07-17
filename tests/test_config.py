@@ -112,6 +112,39 @@ def test_set_shell_confirmation_invalid(tmp_path):
         cfg.set_shell_confirmation("maybe")
 
 
+def test_model_context_length_defaults_to_128k(tmp_path):
+    cfg = _make_config(tmp_path)
+    assert cfg.model_context_length == 131072
+
+
+def test_set_model_context_length_persists(tmp_path):
+    import copy
+    import core.config as cfg_mod
+
+    data = copy.deepcopy(cfg_mod.DEFAULT_CONFIG)
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump(data, sort_keys=False))
+
+    with patch.object(cfg_mod, "AICODER_HOME", tmp_path), \
+         patch.object(cfg_mod, "CONFIG_PATH", config_file), \
+         patch.object(cfg_mod, "MEMORY_DIR", tmp_path / "memory"):
+        cfg = cfg_mod.load_config()
+        cfg.set_model_context_length(32768)
+        assert cfg.model_context_length == 32768
+        # Reload from disk — confirms it was actually persisted, not just
+        # updated in memory.
+        reloaded = cfg_mod.load_config()
+        assert reloaded.model_context_length == 32768
+
+
+def test_set_model_context_length_rejects_non_positive(tmp_path):
+    cfg = _make_config(tmp_path)
+    with pytest.raises(ValueError):
+        cfg.set_model_context_length(0)
+    with pytest.raises(ValueError):
+        cfg.set_model_context_length(-1)
+
+
 # ─── deep_merge ──────────────────────────────────────────────────────────────
 
 def test_deep_merge_adds_keys():

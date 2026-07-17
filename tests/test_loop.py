@@ -37,6 +37,24 @@ def _isolate_memory_dir(monkeypatch, tmp_path):
     monkeypatch.setattr("core.config.MEMORY_DIR", tmp_path / "memory")
 
 
+@pytest.fixture(autouse=True)
+def _assume_model_already_loaded(monkeypatch):
+    """AgentSession.send() now calls _ensure_model_loaded() first (see
+    agent/loop.py), which shells out to `lms ps` via
+    core.model.is_lmstudio_model_loaded — a REAL subprocess call, since
+    _session() below builds a real AgentSession against the real,
+    unmocked config (which — DEFAULT_CONFIG — points at LM Studio's actual
+    default endpoint). Without this, every single test in this file that
+    calls send() would hit a real subprocess, depending on `lms` actually
+    being installed and reachable on whatever machine runs the suite —
+    autouse so that dependency never leaks in by default; a test that
+    specifically wants to exercise _ensure_model_loaded's own behavior
+    overrides this patch locally."""
+    import core.model as model_mod
+
+    monkeypatch.setattr(model_mod, "is_lmstudio_model_loaded", lambda name: True)
+
+
 def _session(responses):
     """An AgentSession on an empty temp workspace, driven by a scripted LLM."""
     ws = Path(tempfile.mkdtemp())
@@ -124,6 +142,41 @@ def test_empty_stream_raises():
     s = _session([[]])  # zero chunks
     with pytest.raises(RuntimeError):
         s.send("hi")
+
+
+# ─── A non-empty stream that produces an empty answer (no text, no tool call) ──
+# Live-reproduced with Qwen3.5 via LM Studio: a "thinking" model can stream a
+# full turn's worth of reasoning that LangChain's ChatOpenAI doesn't extract
+# (it explicitly doesn't support non-standard `reasoning_content` deltas),
+# then stop without ever emitting real content or a tool call — the chunk
+# itself is real (not the zero-chunks case above), just empty.
+
+def test_empty_response_retries_then_recovers():
+    s = _session([
+        [AIMessageChunk(content="")],           # empty turn 1 — retried
+        [AIMessageChunk(content="")],           # empty turn 2 — retried (hits the cap)
+        [AIMessageChunk(content="I'm here now.")],  # recovers on the 3rd attempt
+    ])
+    out = s.send("hi")
+    assert out == "I'm here now."
+    assert s.llm.calls == 3
+    # Each retry nudges with a HumanMessage, not a blank AIMessage — an empty
+    # assistant turn in history risks the model imitating its own silence.
+    nudges = [m for m in s.messages if isinstance(m, HumanMessage)
+              and "produced no answer" in m.content]
+    assert len(nudges) == 2
+
+
+def test_empty_response_gives_up_after_max_retries(capsys):
+    s = _session([[AIMessageChunk(content="")]])  # always empty, never recovers
+    out = s.send("hi")
+    assert out == ""
+    # 1 initial attempt + MAX_EMPTY_RESPONSE_RETRIES retries, then it stops
+    # rather than looping forever on a model that's never going to answer.
+    assert s.llm.calls == 1 + AgentSession.MAX_EMPTY_RESPONSE_RETRIES
+    assert s.last_turn_complete is True  # gives up cleanly, doesn't hang the turn
+    out_text = capsys.readouterr().out
+    assert "internal reasoning" in out_text or "no answer" in out_text.lower()
 
 
 # ─── last_turn_complete distinguishes a real answer from step-cap exhaustion ───
@@ -396,6 +449,137 @@ def test_switch_model_lmstudio_load_failure_warns_not_raises(tmp_path, monkeypat
         cfg.raw()["model"] = saved
 
 
+# ── _try_lmstudio_unload — explicit unload on a clean /exit, distinct from ──────
+#    LM Studio's own idle-TTL (see core/model.py's switch_lmstudio_model)
+
+def test_try_lmstudio_unload_unloads_the_current_model(tmp_path, monkeypatch):
+    import core.model as model_mod
+    from agent.loop import _try_lmstudio_unload
+
+    cfg = _isolate_config(monkeypatch, tmp_path)
+    saved = dict(cfg.raw()["model"])
+    _set_lmstudio_provider(cfg)
+    calls = []
+    monkeypatch.setattr(model_mod, "unload_lmstudio_model", lambda name: calls.append(name))
+    try:
+        _try_lmstudio_unload("current-model", cfg)
+        assert calls == ["current-model"]
+    finally:
+        cfg.raw()["model"] = saved
+
+
+def test_try_lmstudio_unload_skipped_for_a_non_lmstudio_endpoint(tmp_path, monkeypatch):
+    import core.model as model_mod
+    from agent.loop import _try_lmstudio_unload
+
+    cfg = _isolate_config(monkeypatch, tmp_path)
+    saved = dict(cfg.raw()["model"])
+    cfg.raw()["model"]["base_url"] = "https://api.example.com/v1"  # not LM Studio
+    calls = []
+    monkeypatch.setattr(model_mod, "unload_lmstudio_model", lambda name: calls.append(name))
+    try:
+        _try_lmstudio_unload("current-model", cfg)
+        assert calls == []
+    finally:
+        cfg.raw()["model"] = saved
+
+
+def test_try_lmstudio_unload_failure_is_fully_silent(tmp_path, monkeypatch, capsys):
+    """Unlike _try_lmstudio_load (which warns on failure), a failed unload on
+    exit must never print anything or raise — the app is already on its way
+    out, and LM Studio's own idle-TTL is still there as a fallback either
+    way."""
+    import core.model as model_mod
+    from agent.loop import _try_lmstudio_unload
+
+    cfg = _isolate_config(monkeypatch, tmp_path)
+    saved = dict(cfg.raw()["model"])
+    _set_lmstudio_provider(cfg)
+
+    def raise_stuck(name):
+        raise RuntimeError("model is stuck mid-request")
+
+    monkeypatch.setattr(model_mod, "unload_lmstudio_model", raise_stuck)
+    try:
+        _try_lmstudio_unload("current-model", cfg)  # must not raise
+        assert capsys.readouterr().out == ""
+    finally:
+        cfg.raw()["model"] = saved
+
+
+# ── _ensure_model_loaded — called at the top of every send() ────────────────────
+# Live-reproduced risk: LM Studio auto-loads a downloaded-but-unloaded model on
+# the first request that references it, but at LM Studio's *own* default
+# context length and no TTL — completely ignoring config.yaml's
+# model.context_length, silently reintroducing the "tokens to keep... greater
+# than the context length" crash one idle-timeout after switch_lmstudio_model
+# first fixed it. _ensure_model_loaded exists to reload it *properly* first.
+
+def test_ensure_model_loaded_is_a_noop_when_already_loaded(tmp_path, monkeypatch, capsys):
+    import core.model as model_mod
+    from agent.loop import _ensure_model_loaded
+
+    cfg = _isolate_config(monkeypatch, tmp_path)
+    saved = dict(cfg.raw()["model"])
+    _set_lmstudio_provider(cfg, model_name="already-loaded")
+    monkeypatch.setattr(model_mod, "is_lmstudio_model_loaded", lambda name: True)
+    calls = []
+    monkeypatch.setattr(model_mod, "switch_lmstudio_model", lambda name: calls.append(name))
+    try:
+        _ensure_model_loaded()
+        assert calls == []  # never reloads a model that's already loaded
+        assert capsys.readouterr().out == ""  # and stays quiet about it
+    finally:
+        cfg.raw()["model"] = saved
+
+
+def test_ensure_model_loaded_reloads_when_unloaded(tmp_path, monkeypatch, capsys):
+    import core.model as model_mod
+    from agent.loop import _ensure_model_loaded
+
+    cfg = _isolate_config(monkeypatch, tmp_path)
+    saved = dict(cfg.raw()["model"])
+    _set_lmstudio_provider(cfg, model_name="idle-unloaded-model")
+    monkeypatch.setattr(model_mod, "is_lmstudio_model_loaded", lambda name: False)
+    calls = []
+    monkeypatch.setattr(model_mod, "switch_lmstudio_model", lambda name: calls.append(name))
+    try:
+        _ensure_model_loaded()
+        assert calls == ["idle-unloaded-model"]
+        assert "idle-unloaded-model" in capsys.readouterr().out
+    finally:
+        cfg.raw()["model"] = saved
+
+
+def test_ensure_model_loaded_skipped_for_a_non_lmstudio_endpoint(tmp_path, monkeypatch, capsys):
+    import core.model as model_mod
+    from agent.loop import _ensure_model_loaded
+
+    cfg = _isolate_config(monkeypatch, tmp_path)
+    saved = dict(cfg.raw()["model"])
+    cfg.raw()["model"]["base_url"] = "https://api.example.com/v1"  # not LM Studio
+    checked = []
+    monkeypatch.setattr(model_mod, "is_lmstudio_model_loaded", lambda name: checked.append(name) or False)
+    try:
+        _ensure_model_loaded()
+        assert checked == []  # never even checks — no lms shellout for a non-LM-Studio endpoint
+        assert capsys.readouterr().out == ""
+    finally:
+        cfg.raw()["model"] = saved
+
+
+def test_send_calls_ensure_model_loaded(tmp_path, monkeypatch):
+    """Integration-level check that send() actually wires this in, not just
+    that _ensure_model_loaded works in isolation."""
+    import agent.loop as loop_mod
+
+    calls = []
+    monkeypatch.setattr(loop_mod, "_ensure_model_loaded", lambda: calls.append(1))
+    s = _session([[AIMessageChunk(content="done")]])
+    s.send("hi")
+    assert calls == [1]
+
+
 def test_model_command_direct_name_switches(tmp_path, monkeypatch, capsys):
     from agent.loop import _handle_model_command
 
@@ -652,6 +836,28 @@ def test_repl_enters_and_exits_alt_screen_on_a_real_terminal(monkeypatch, tmp_pa
     assert disable_at != -1, "alt-screen disable code missing"
     assert enable_at < disable_at, "screen was disabled before it was enabled"
     assert "\x1b[?25l" not in out, "cursor should stay visible (hide_cursor=False)"
+
+
+def test_repl_exit_unloads_the_model_from_lmstudio(monkeypatch, tmp_path):
+    """A clean /exit is a deliberate "I'm done" signal — the model should be
+    unloaded right away rather than only via LM Studio's own idle-TTL (see
+    agent/loop.py's _try_lmstudio_unload)."""
+    import io
+
+    from rich.console import Console
+    from rich.prompt import Prompt
+
+    import agent.loop as loop_mod
+
+    fake_console = Console(file=io.StringIO(), force_terminal=True, width=80)
+    monkeypatch.setattr(loop_mod, "console", fake_console)
+    monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: "/exit"))
+    calls = []
+    monkeypatch.setattr(loop_mod, "_try_lmstudio_unload", lambda name, cfg: calls.append(name))
+
+    loop_mod.run_agent_repl(tmp_path)
+
+    assert len(calls) == 1
 
 
 def test_repl_shows_devmode_banner_when_a_design_exists(monkeypatch, tmp_path):
@@ -1086,7 +1292,15 @@ def test_run_agent_repl_continue_resumes_a_saved_conversation(monkeypatch, tmp_p
 
     monkeypatch.setattr(Prompt, "ask", staticmethod(lambda *a, **k: "/exit"))
     loop_mod.run_agent_repl(tmp_path, continue_session=True)
-    assert "Resumed the previous conversation" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Resumed the previous conversation" in out
+    # Live-reported bug: load_transcript() alone restores session.messages
+    # (so the *model* has context) but never re-displays any of it — from
+    # the user's own perspective --continue looked exactly like a brand
+    # new session. The actual prior turn must be visibly replayed, not
+    # just silently available to the model.
+    assert "fix the login bug" in out
+    assert "Sure, on it." in out
 
 
 def test_run_agent_repl_continue_with_nothing_saved_starts_fresh(monkeypatch, tmp_path, capsys):

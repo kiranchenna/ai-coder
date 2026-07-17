@@ -225,7 +225,34 @@ def is_lmstudio_model_downloaded(model_name: str) -> bool | None:
     return any(m["name"] == model_name for m in models)
 
 
+def is_lmstudio_model_loaded(name: str) -> bool:
+    """Whether `name` is currently loaded *in memory* right now — distinct
+    from is_lmstudio_model_downloaded (on disk, whether loaded or not).
+    Read-only: never loads/unloads anything itself, just reports current
+    state, so a caller can decide whether a (re)load is actually needed
+    before paying for one. Returns False (not raises) if LM Studio/`lms`
+    can't be reached — "can't tell" is treated the same as "not loaded" so
+    callers fall through to their own load attempt rather than silently
+    assuming it's fine."""
+    import json
+
+    try:
+        loaded = json.loads(_run_lms("ps", "--json") or "[]")
+    except RuntimeError:
+        return False
+    return any(m.get("type") == "llm" and m.get("identifier") == name for m in loaded)
+
+
 LMSTUDIO_DEFAULT_BASE_URL = "http://localhost:1234/v1"
+
+# How long a model can sit unused (no requests — not tied to whether
+# `aicoder` itself is still running) before LM Studio unloads it on its own,
+# via `lms load`'s native --ttl. This is LM Studio's own idle-tracking, not
+# something aicoder polls for: it survives aicoder exiting or crashing, and
+# — importantly — won't unload a model something *else* (another aicoder
+# session, LM Studio's own chat UI) is still actively using, since real
+# requests keep resetting its clock.
+LMSTUDIO_IDLE_UNLOAD_SECONDS = 600  # 10 minutes
 
 
 def is_lmstudio_endpoint(base_url: str) -> bool:
@@ -239,13 +266,32 @@ def is_lmstudio_endpoint(base_url: str) -> bool:
 
 def switch_lmstudio_model(name: str, *, timeout: float = 120) -> None:
     """
-    Load ``name`` in LM Studio, unloading any other currently-loaded LLM
-    first (embedding models are left alone — RAG needs those to stay up) so
-    only one coding model occupies RAM at a time. Raises RuntimeError on
-    failure — the caller is responsible for deciding whether that's fatal or
-    just a warning (see agent/loop.py's _switch_model).
+    Load ``name`` in LM Studio at the configured context length and with the
+    idle-unload TTL (LMSTUDIO_IDLE_UNLOAD_SECONDS), unloading any other
+    currently-loaded LLM first (embedding models are left alone — RAG needs
+    those to stay up) so only one coding model occupies RAM at a time.
+    Raises RuntimeError on failure — the caller is responsible for deciding
+    whether that's fatal or just a warning (see agent/loop.py's
+    _switch_model).
+
+    Always loads with an explicit --context-length matching
+    Config.model_context_length. Without this, LM Studio loads at its own
+    default (often 4096-8192) regardless of what config.yaml specifies —
+    confirmed live, twice, with two different models: aicoder happily builds
+    a prompt sized for the configured context, LM Studio silently truncates
+    to its own smaller loaded window, and the request fails with a cryptic
+    "tokens to keep from the initial prompt is greater than the context
+    length" the moment a real system prompt (tools + repo overview +
+    memory) doesn't fit — not on `aicoder` startup, on the first real turn.
+    If the model's already loaded but at a *different* context length or TTL
+    than configured, it's unloaded and reloaded rather than left mismatched.
     """
     import json
+
+    from core.config import get_config
+
+    context_length = get_config().model_context_length
+    ttl_ms = LMSTUDIO_IDLE_UNLOAD_SECONDS * 1000
 
     try:
         loaded = json.loads(_run_lms("ps", "--json") or "[]")
@@ -254,8 +300,18 @@ def switch_lmstudio_model(name: str, *, timeout: float = 120) -> None:
 
     # `lms load` on an already-loaded modelKey doesn't reuse it — confirmed
     # live: it spins up a second, separately-identified instance (a ":2"
-    # suffix) rather than being a no-op, silently doubling RAM usage.
-    already_loaded = any(m.get("type") == "llm" and m.get("identifier") == name for m in loaded)
+    # suffix) rather than being a no-op, silently doubling RAM usage. Only
+    # skip the reload if it's already loaded *and* already at the configured
+    # context length and TTL — otherwise it's exactly the mismatch this
+    # function exists to prevent (a model loaded without a TTL, e.g. by hand
+    # or by an older aicoder run, would otherwise never pick one up and just
+    # sit there indefinitely).
+    already_loaded = any(
+        m.get("type") == "llm" and m.get("identifier") == name
+        and m.get("contextLength") == context_length
+        and m.get("ttlMs") == ttl_ms
+        for m in loaded
+    )
 
     for m in loaded:
         if m.get("type") == "llm" and m.get("identifier") != name:
@@ -263,8 +319,35 @@ def switch_lmstudio_model(name: str, *, timeout: float = 120) -> None:
                 _run_lms("unload", m["identifier"], timeout=timeout)
             except RuntimeError:
                 pass  # best-effort — a stuck old model shouldn't block loading the new one
+
     if not already_loaded:
-        _run_lms("load", name, "-y", timeout=timeout)
+        # The loop above only unloads *other* models — the target itself
+        # needs an explicit unload too if it's the one that's mismatched.
+        if any(m.get("type") == "llm" and m.get("identifier") == name for m in loaded):
+            try:
+                _run_lms("unload", name, timeout=timeout)
+            except RuntimeError:
+                pass  # best-effort — `lms load` below will still surface any real failure
+        _run_lms(
+            "load", name,
+            "--context-length", str(context_length),
+            "--ttl", str(LMSTUDIO_IDLE_UNLOAD_SECONDS),
+            "-y",
+            timeout=timeout,
+        )
+
+
+def unload_lmstudio_model(name: str, *, timeout: float = 15) -> None:
+    """Unload a specific model right away. Used on a clean `aicoder` exit
+    (/exit, Ctrl+C/Ctrl+D, the TUI's quit action) — a deliberate "I'm done"
+    signal, distinct from LM Studio's own idle-TTL unload (see
+    switch_lmstudio_model's --ttl), which is the right default for "still
+    running but idle" but shouldn't be the *only* way a model comes down:
+    an explicit exit means unload now, not wait out the idle window. Raises
+    RuntimeError on failure — the caller (agent/loop.py's
+    _try_lmstudio_unload) treats this as fully best-effort, since a stuck or
+    failed unload must never block the app from actually exiting."""
+    _run_lms("unload", name, timeout=timeout)
 
 
 def is_lmstudio_reachable(base_url: str) -> set[str] | None:
@@ -332,18 +415,26 @@ def ensure_lmstudio_running(
     return True
 
 
-def selftest() -> bool:
+def selftest(console=None) -> bool:
     """
     Phase 0 smoke test: verify the configured model can do native tool calling.
 
     Binds a trivial ``get_time`` tool and checks that the model chooses to call
     it. Returns True on success. Prints a human-readable result.
+
+    ``console`` defaults to a fresh SafeConsole (the ``aicoder --selftest``
+    CLI path, writing straight to the real terminal). ``/doctor`` passes
+    ``agent.loop.console`` instead — that singleton gets swapped for a
+    RichLog-backed console when the TUI is active, so a locally-created
+    console here would silently write to real stdout underneath the TUI's
+    alternate screen buffer instead of the visible chat log.
     """
     from langchain_core.tools import tool
 
-    from core.console import SafeConsole
+    if console is None:
+        from core.console import SafeConsole
 
-    console = SafeConsole()
+        console = SafeConsole()
 
     @tool
     def get_time() -> str:

@@ -4,9 +4,120 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from rich.markdown import Markdown
+
 import devmode.session as S
 from devmode.phases import PHASES, PHASES_BY_ID
 from devmode.session import DevSession
+
+
+# ── _ask / _confirm — TUI-aware, no popups for /develop's discuss loop ──────────
+# Live-reported bug: every question and yes/no confirmation in /develop's
+# flow opened as a popup showing nothing but a bare phase id — genuinely
+# confusing. In the TUI these now route through the main chat input instead
+# (agent/tui.py's ask_inline/ask_inline_confirm); in the plain REPL (or if
+# textual isn't installed) they still fall back to a normal Prompt.ask/
+# Confirm.ask, unchanged from before.
+
+def test_ask_routes_to_tui_inline_when_tui_active(monkeypatch):
+    import agent.tui as tui_mod
+
+    monkeypatch.setattr(tui_mod, "is_tui_active", lambda: True)
+    calls = []
+    monkeypatch.setattr(tui_mod, "ask_inline",
+                        lambda q, d="": calls.append((q, d)) or "typed reply")
+
+    assert S._ask("Your reply?", default="fallback") == "typed reply"
+    assert calls == [("Your reply?", "fallback")]
+
+
+def test_ask_falls_back_to_prompt_ask_when_no_tui(monkeypatch):
+    import agent.tui as tui_mod
+
+    monkeypatch.setattr(tui_mod, "is_tui_active", lambda: False)
+    monkeypatch.setattr(S.Prompt, "ask", lambda *a, **k: "plain repl reply")
+
+    assert S._ask("Your reply?") == "plain repl reply"
+
+
+def test_confirm_routes_to_tui_inline_when_tui_active(monkeypatch):
+    import agent.tui as tui_mod
+
+    monkeypatch.setattr(tui_mod, "is_tui_active", lambda: True)
+    calls = []
+    monkeypatch.setattr(tui_mod, "ask_inline_confirm",
+                        lambda q, d=True: calls.append((q, d)) or False)
+
+    assert S._confirm("Apply fix?", default=True) is False
+    assert calls == [("Apply fix?", True)]
+
+
+def test_confirm_falls_back_to_confirm_ask_when_no_tui(monkeypatch):
+    import agent.tui as tui_mod
+
+    monkeypatch.setattr(tui_mod, "is_tui_active", lambda: False)
+    monkeypatch.setattr(S.Confirm, "ask", lambda *a, **k: True)
+
+    assert S._confirm("Apply fix?") is True
+
+
+# ── _stream — TUI-aware output routing ───────────────────────────────────────
+# Live-reproduced bug: _stream() wrote every model token straight to
+# sys.stdout for a live "typing" effect — correct in the plain REPL (stdout
+# genuinely is the terminal there), but under the TUI stdout isn't connected
+# to the RichLog at all, so the entire discuss-loop proposal/critique text
+# silently never appeared anywhere a user could see it. Confirmed live: a
+# full /develop phase ran to completion with the AI's actual response never
+# once landing in the chat log.
+
+class _FakeChunk:
+    def __init__(self, text):
+        self.content = text
+
+
+class _FakeStreamingLLM:
+    def __init__(self, pieces):
+        self._pieces = pieces
+
+    def stream(self, messages):
+        return iter(_FakeChunk(p) for p in self._pieces)
+
+
+def test_stream_writes_to_stdout_when_no_tui(monkeypatch, capsys):
+    import agent.tui as tui_mod
+    import core.model as CM
+
+    monkeypatch.setattr(tui_mod, "is_tui_active", lambda: False)
+    monkeypatch.setattr(CM, "get_chat_model", lambda precise=False, model=None: _FakeStreamingLLM(["Hello", " world."]))
+
+    printed = []
+    monkeypatch.setattr(S, "console", type("C", (), {"print": lambda self, *a, **k: printed.append(a)})())
+
+    result = S._stream([])
+    assert result == "Hello world."
+    assert "Hello world." in capsys.readouterr().out
+    # No Markdown re-print in the plain REPL — the live-typed text is already
+    # fully visible on screen; a second print would duplicate it.
+    assert not any(isinstance(arg, Markdown) for call in printed for arg in call)
+
+
+def test_stream_routes_through_console_when_tui_active(monkeypatch, capsys):
+    import agent.tui as tui_mod
+    import core.model as CM
+
+    monkeypatch.setattr(tui_mod, "is_tui_active", lambda: True)
+    monkeypatch.setattr(CM, "get_chat_model", lambda precise=False, model=None: _FakeStreamingLLM(["Hello", " world."]))
+
+    printed = []
+    monkeypatch.setattr(S, "console", type("C", (), {"print": lambda self, *a, **k: printed.append(a)})())
+
+    result = S._stream([])
+    assert result == "Hello world."
+    # Nothing raw went to stdout — under the TUI that's invisible to the user.
+    assert capsys.readouterr().out == ""
+    rendered = [arg for call in printed for arg in call if isinstance(arg, Markdown)]
+    assert len(rendered) == 1
+    assert rendered[0].markup == "Hello world."
 
 
 def test_init_all_phases_pending(tmp_path):
@@ -202,7 +313,7 @@ def test_build_generates_pending_files(tmp_path, monkeypatch):
                         lambda entry, spec, conv, completed: (gen.append(entry["path"]),
                                                               f"# {entry['path']}\nx = 1\n")[1])
     monkeypatch.setattr(b, "_verify_and_fix", lambda spec: None)
-    monkeypatch.setattr(B.Confirm, "ask", lambda *a, **k: True)
+    monkeypatch.setattr(B, "_confirm", lambda *a, **k: True)
     b.build()
 
     assert (tmp_path / "app.py").read_text().startswith("# app.py")

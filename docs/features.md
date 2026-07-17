@@ -1,6 +1,6 @@
 # AICoder — Features Reference
 
-AICoder v3 is a single **agentic loop**: you describe a task, and the model
+AICoder v4 is a single **agentic loop**: you describe a task, and the model
 calls tools to read and edit code, run commands, research the web, run tests,
 and remember decisions. There is no fixed command pipeline — the model decides
 which tools to use.
@@ -71,6 +71,7 @@ commands are handled by the REPL (`agent/loop.py`):
 | `/model [name]` | **LM Studio (default):** `/model` alone opens an interactive picker of every model already downloaded in LM Studio (current marked) — pick one to switch. `/model <name>` switches straight to an id you know (see `lms ls`). Either way the choice is persisted to `config.yaml` as the new default (mirrors Claude Code's `/model`). **Other endpoints:** `/model` shows the current model/endpoint instead (no discovery API to pick from); `/model <name>` still switches the model id |
 | `/status` | Workspace, model, provider, and Developer Mode profile — the startup banner's content, on demand |
 | `/context` | Conversation size vs. the auto-compaction budget, as a percentage |
+| `/context-length [n]` | Bare: show the current context length (LM Studio only). With a value: set it, persist to `config.yaml`, and reload the live model at the new size — see [LM Studio lifecycle management](architecture.md#lm-studio-lifecycle-management) |
 | `/compact` | Force the same summarize-older-turns compaction `AgentSession` runs automatically, right now |
 | `/permissions` | Bare: show the shell/file confirmation modes. `/permissions shell\|files <mode>`: change and persist one, without restarting |
 | `/review` | Ask the agent to review the current `git_diff` for correctness bugs and cleanup opportunities |
@@ -119,9 +120,16 @@ makes the *existing* code work inside it unchanged:
 - `Confirm.ask`/`Prompt.ask` (both from `rich.prompt`) are monkeypatched for
   the lifetime of the session — the same technique this project's own test
   suite already uses, just applied at runtime — to route through a Textual
-  modal instead. Every existing confirmation across the app (shell/file
-  writes, the devmode discuss loop, ...) becomes TUI-native with zero changes
-  to any of those call sites.
+  modal instead. Most existing confirmations across the app (shell/file
+  writes, `/model`'s "Other…" id entry, ...) become TUI-native this way with
+  zero changes to their call sites. Developer Mode's discuss loop is the one
+  deliberate exception: `devmode/session.py` and `devmode/build.py` call
+  `_ask`/`_confirm` instead of `Prompt.ask`/`Confirm.ask` directly, which in
+  the TUI route through the main chat input (`ask_inline`/`ask_inline_confirm`
+  → `AICoderApp.wait_for_chat_reply`) rather than a modal — a modal showing
+  nothing but a bare phase id as its question was confirmed, live, to be
+  genuinely confusing, and the discuss loop reads better as an ordinary
+  back-and-forth in the transcript anyway.
 - The `/model` picker additionally gets a genuine arrow-key `OptionList` (via
   `ask_choice`/`is_tui_active`), on top of the generic bridge above — listing
   every model already downloaded in LM Studio, opening with the current model
@@ -148,6 +156,13 @@ already matches a command exactly, the dropdown gets out of the way so a
 single Enter runs it — otherwise `AutoComplete`'s own Enter handling would
 "complete" an already-complete command instead of submitting it, silently
 requiring two Enters. Built on the `textual-autocomplete` package.
+
+**Prompt history.** Up/Down recall previously submitted prompts in the
+current session, shell-style — Up walks back through history, Down walks
+forward, and if you'd started typing something new before pressing Up, it's
+preserved as a draft you land back on when you return to the bottom.
+Consecutive duplicate submissions aren't recorded twice. Per-session only,
+not persisted across restarts.
 
 **Vision: paste a screenshot with Ctrl+V.** Claude's model is natively
 multimodal; LM Studio's local model ecosystem splits vision and coding into
@@ -212,6 +227,10 @@ live in each file, serving two different purposes:
   it finds the most recently saved *other* session for the current workspace
   and appends its messages after a freshly rebuilt system prompt (never
   persisted/restored itself, since the repo may have changed since).
+  `--continue` also replays the prior turns into the visible chat log (the
+  same renderer `/history <n>` uses), not just the model's hidden context —
+  otherwise a resumed session looked identical to a brand-new one even
+  though the context genuinely carried over.
 - **`turns`** — a human-analyzable log, one entry per user message:
   `{prompt, actions, answer, completed}`, where each action is
   `{tool, args, result, diffs}` — `diffs` are **real unified diffs**, not
@@ -413,7 +432,7 @@ single reflected pass (a same-strength self-judge added latency without quality)
   Configure stdio servers under `mcp.servers` in config; their tools are
   discovered and exposed to the agent (prefixed `<server>__<tool>`) alongside
   the built-ins. MCP sessions run on a background event loop bridged to the sync
-  agent loop. Requires `pip install "ai-coder[mcp]"`; opt-in.
+  agent loop. Requires `pip install "local-aicoder[mcp]"`; opt-in.
 
 ### Project instructions (`AICODER.md`)
 - A user-authored `AICODER.md` in the workspace root (and an optional global

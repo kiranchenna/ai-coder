@@ -15,12 +15,11 @@ from pathlib import Path
 from langchain_core.messages import HumanMessage, SystemMessage
 from core.console import SafeConsole
 from rich.panel import Panel
-from rich.prompt import Confirm
 from rich.rule import Rule
 
 from core.model import balanced_json_arrays, get_chat_model
 from devmode.phases import PHASES
-from devmode.session import DevSession, _stream
+from devmode.session import DevSession, _confirm, _stream
 
 console = SafeConsole()
 
@@ -134,7 +133,7 @@ class Builder:
         done = sum(1 for f in plan["files"] if f["status"] == "done")
         if done:
             console.print(f"[dim]Resuming — {done}/{len(plan['files'])} files already generated.[/dim]")
-        if not Confirm.ask("Generate the pending files now?", default=True):
+        if not _confirm("Generate the pending files now?", default=True):
             console.print("[dim]Stopped. Plan saved — edit it and re-run 'dev build'.[/dim]")
             return
 
@@ -339,7 +338,7 @@ class Builder:
                                     border_style="yellow"))
                 console.print("[dim]Fix manually, or re-run 'dev build', or 'dev revisit <phase>'.[/dim]")
                 return
-            if not Confirm.ask("Let the agent fix it?", default=True):
+            if not _confirm("Let the agent fix it?", default=True):
                 console.print("[dim]Left as-is. The problem above is saved nowhere — copy it if needed.[/dim]")
                 return
             self._agentic_fix(proj, problem)

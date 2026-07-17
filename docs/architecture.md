@@ -1,11 +1,16 @@
 # AICoder — Architecture
 
-**Version:** 3.0.0 | **Language:** Python 3.11+ | **Entry point:** `cli.py` → `aicoder` CLI command
+**Version:** 4.0.1 | **Language:** Python 3.11+ | **Entry point:** `cli.py` → `aicoder` CLI command | **PyPI package:** `local-aicoder` (command stays `aicoder` — see [Key architectural decisions #13](#key-architectural-decisions))
 
-AICoder v3 is a local, offline **agentic** coding assistant. It uses LM Studio
+AICoder is a local, offline **agentic** coding assistant. It uses LM Studio
 (local LLM, no cloud, no API keys) to drive a single tool-calling loop that
 works on your real repository: reading and editing code, running commands and
 tests, researching the web, and remembering decisions across sessions.
+
+For a validated list of every dependency (purpose, license, why it was
+chosen), see [dependencies.md](dependencies.md). This document covers the
+system itself — structure, data flow, and the non-obvious decisions/gotchas
+someone needs before making a manual change.
 
 ---
 
@@ -71,6 +76,10 @@ not in the repo.
 
 ## Tech stack
 
+Quick reference — see **[dependencies.md](dependencies.md)** for the full,
+license-verified breakdown (purpose, why each one was chosen, alternatives
+considered where relevant).
+
 | Category | Library | Floor |
 |---|---|---|
 | LLM | langchain-openai | 1.0+ |
@@ -87,8 +96,10 @@ not in the repo.
 | PDF parsing | pypdf | 4.0+ |
 | Word parsing | python-docx | 1.1+ |
 | File patterns | pathspec | 0.12+ |
-| Testing | pytest | 8.0+ |
-| External | LM Studio (local LLM server) | — |
+| Testing | pytest, pytest-asyncio | 8.0+ / 1.0+ |
+| Linting | ruff (dev extra) | 0.15+ |
+| MCP client (optional) | mcp (`mcp` extra) | 1.0+ |
+| External | LM Studio (local LLM server, via its `lms` CLI for lifecycle control — see [LM Studio lifecycle management](#lm-studio-lifecycle-management)) | — |
 
 ---
 
@@ -126,6 +137,13 @@ Tools touch the workspace (read/write code, run shell/tests) and `~/.aicoder/`
   LM-Studio-specific, detected by `base_url` matching its default. See
   `core/model.py`'s `get_chat_model()`/`_build_openai_compatible()`, and the
   README's "Using a different backend" for setup.
+- `model.context_length` (default 131072 / 128k) drives both the LM Studio
+  load parameters (`--context-length`) and the client-side history-
+  compaction budget (`max(8_000, context_length * 2)` chars — see
+  `AgentSession._history_budget`). Change it in-session with
+  **`/context-length <n>`**, not by hand-editing the file while `aicoder` is
+  running — the command also reloads the live model at the new value; see
+  [LM Studio lifecycle management](#lm-studio-lifecycle-management).
 
 ```yaml
 model:
@@ -135,7 +153,7 @@ model:
   api_key: ""                     # blank for local servers with no auth
   temperature: 0.3
   temperature_precise: 0.1
-  context_length: 16384
+  context_length: 131072  # 128k — change with /context-length, not by hand
 
 shell:
   confirmation: always       # always | smart | never
@@ -245,6 +263,131 @@ quality from a small model".
     data: `raw_messages` for `--continue`'s exact restore, `turns` (with
     real per-action diffs, not just a status string) for `/history`'s
     human-readable browsing.
+13. **PyPI package name ≠ command name.** The distribution is `local-aicoder`
+    (`pip install local-aicoder`) but the command stays `aicoder`
+    (`[project.scripts]` in `pyproject.toml`) — these are independent in
+    Python packaging. Forced by PyPI's typosquat guard: `ai-coder` normalizes
+    (hyphens/case ignored) to the same name as an unrelated pre-existing
+    package, so the *distribution* name had to change; the actual command
+    users type didn't need to, and keeping it unchanged avoided breaking
+    every existing doc/muscle-memory reference for a purely cosmetic PyPI
+    constraint.
+14. **LM Studio is managed, not just talked to.** Beyond sending chat
+    requests, `aicoder` actively manages the LM Studio server's lifecycle
+    (auto-start, correct context length + idle-unload TTL on every load,
+    auto-reload before a turn if idle-unloaded, explicit unload on a clean
+    exit) — see [LM Studio lifecycle management](#lm-studio-lifecycle-management)
+    below. This exists because LM Studio's own defaults silently diverge from
+    `config.yaml` in ways that only surface as a cryptic runtime crash — not
+    a hypothetical, each mechanism below was added after reproducing the
+    failure live.
+15. **The startup banner is full-width, content-height, two columns side by
+    side** (`agent/loop.py`'s `_startup_banner`) — logo/identity on the left
+    (~1/3, protected by a hard minimum width so the block-letter logo can
+    never wrap), tip + tool highlights on the right. Getting this right
+    surfaced a real Textual bug worth knowing before touching it again — see
+    [Known gotchas](#known-gotchas-for-future-changes).
+16. **Prompt history, like a shell.** The TUI's input (`agent/tui.py`'s
+    `ChatInput`) tracks every submission; Up/Down recall it, matching Claude
+    Code's own input box. Per-session only (not persisted to disk) — kept
+    deliberately simple.
+17. **`--continue` replays the conversation, not just its context.**
+    `AgentSession.load_transcript()` alone restores `session.messages` (so
+    the *model* has full context) but doesn't touch the visible chat log —
+    confirmed live, that made `--continue` look exactly like starting fresh
+    even though the context genuinely was there. Both front-ends now replay
+    the actual prior turns via `_render_session_detail` (the same renderer
+    `/history <n>` uses) right after a successful resume.
+18. **`/develop`'s back-and-forth reads like a conversation, not a stream of
+    popups.** Every `Prompt.ask`/`Confirm.ask` in `devmode/session.py` and
+    `devmode/build.py` goes through `_ask`/`_confirm`, which — only in the
+    TUI, only for devmode — route through the main chat input instead of a
+    modal (`agent/tui.py`'s `ask_inline`/`ask_inline_confirm`), since a
+    popup showing nothing but a bare phase id ("requirements") as its
+    question was confirmed live to be genuinely confusing. Deliberately
+    scoped to devmode: shell/file-write confirmations and the `/model`
+    picker keep their modals unchanged.
+19. **An empty model turn is retried, not accepted as "done".**
+    `AgentSession._run_steps()` treats a turn with no tool call *and* no
+    text as recoverable, not final — some local "thinking" models can spend
+    an entire turn on internal reasoning LangChain's `ChatOpenAI` can't
+    capture (it doesn't extract non-standard `reasoning_content` deltas —
+    see its own docstring) and then simply stop. It nudges the model to
+    commit to an answer or a tool call, up to `MAX_EMPTY_RESPONSE_RETRIES`
+    (2) times, before giving up with an explanation instead of a silent
+    `(no further response)`.
+
+---
+
+## LM Studio lifecycle management
+
+Four independent mechanisms in `core/model.py`/`agent/loop.py`, each added
+after reproducing a specific failure live against a real LM Studio instance
+— not preemptive engineering:
+
+| Mechanism | Where | Why |
+|---|---|---|
+| **Auto-start on launch** | `cli.py`'s `_check_openai_compatible` → `core/model.py`'s `ensure_lmstudio_running` | If the server isn't reachable at startup, runs `lms server start` and loads the configured model — narrating progress via an `on_status` callback — instead of just telling the user to open LM Studio themselves. Surfaces the *real* reason on failure (e.g. `lms` not on PATH → "install LM Studio") rather than a generic "cannot reach" message. |
+| **Context length always matches config** | `switch_lmstudio_model` | Every load passes an explicit `--context-length` from `Config.model_context_length`. Without this, LM Studio loads at its own default (often 4096–8192) regardless of `config.yaml` — confirmed live, twice, with two different models: `aicoder` builds a prompt sized for the configured context, LM Studio silently truncates to its own smaller window, and the request fails with "tokens to keep... greater than the context length" on the first real turn. If a model's already loaded but at the *wrong* context length (loaded by hand, or by an older `aicoder`), it's unloaded and reloaded rather than left mismatched. |
+| **Idle-unload TTL, not aggressive unload-on-exit** | `switch_lmstudio_model`'s `--ttl LMSTUDIO_IDLE_UNLOAD_SECONDS` (600 = 10 min) | Every load also sets LM Studio's own native TTL, so a model unloads on its own after being genuinely unused — this is LM Studio's own idle-tracking, survives `aicoder` crashing, and (deliberately) won't unload a model something *else* (another `aicoder` session, LM Studio's own chat UI) is still actively using, since real requests reset the clock. A model loaded without a TTL at all doesn't count as "already correctly loaded" either — it gets reloaded with one. |
+| **Explicit unload on a clean exit** | `agent/loop.py`'s `_try_lmstudio_unload`, wired into both `run_agent_repl`'s exit path and the TUI's `on_unmount` | A deliberate `/exit` (or Ctrl+C/Ctrl+D) is a much stronger "I'm done" signal than idle — unloads immediately rather than waiting out the TTL. Silent on failure (unlike the load path's warning): the app is already exiting, and the TTL is still there as a fallback either way. |
+| **Auto-reload before a turn, if idle-unloaded** | `AgentSession.send()` → `_ensure_model_loaded()` | Checked (read-only, `is_lmstudio_model_loaded`) at the start of every turn. Matters beyond convenience: LM Studio *already* auto-loads a downloaded-but-unloaded model on the first request that touches it — but at its own default context length and no TTL, silently reintroducing the exact context-length crash above, one idle-timeout later. `_ensure_model_loaded` reloads it *properly* (context length + TTL) before that implicit auto-load gets the chance to. |
+
+All four are gated on `is_lmstudio_endpoint(base_url)` — a custom/remote
+OpenAI-compatible server is never touched by any `lms` CLI shellout.
+
+---
+
+## Known gotchas for future changes
+
+Non-obvious traps hit while building the above — worth reading before
+touching these areas again.
+
+- **`RichLog.write()` measures-then-shrinks unless given an explicit
+  `width=`.** Without it, `write()` measures the renderable's own declared
+  width, then shrinks it to `scrollable_content_region.width` at the moment
+  the (possibly deferred) write actually replays — confirmed live, that
+  locks onto whichever resize event `RichLog` receives *first*
+  (`RichLog.on_resize` latches `_size_known` permanently on the first
+  non-zero width it sees), which can be an early, narrower intermediate
+  layout pass, not the final one. A fixed-pixel-width `Table` (the startup
+  banner's two-column layout) doesn't reflow gracefully when shrunk — it
+  mangles content mid-cell. Always pass `width=` explicitly to `write()`
+  when rendering something layout-sensitive (see `agent/tui.py`'s
+  `on_mount`).
+- **Rich's `Table` `ratio=` columns ignore `min_width` once `expand=True`.**
+  Confirmed live: a 1:2 ratio split at console width 80 measured out to
+  27:53, nowhere near a requested 41-column floor. Use explicit computed
+  integer `width=` per column instead if a minimum must be guaranteed (e.g.
+  protecting the startup banner's logo from wrapping).
+- **A Rich `Table` column's default `overflow` is `"ellipsis"` — silent
+  truncation from the end, not wrapping.** For anything where the *end* of
+  the text is the meaningful part (a workspace path — the last component is
+  the actual project name), this hides exactly the wrong part. Set
+  `overflow="fold"` to wrap instead.
+- **`reasoning_content` from local "thinking" models is invisible to
+  LangChain's `ChatOpenAI`**, by that class's own documented design — it
+  doesn't extract non-standard provider fields. A model can stream an
+  entire turn of reasoning and `aicoder` sees only empty `content`, empty
+  `tool_calls`, sometimes even empty `response_metadata`. There is currently
+  no way to surface that reasoning in the UI; `_run_steps`'s retry-with-nudge
+  (decision #19 above) manages the *symptom*, not the cause. Enabling
+  `enable_thinking: false`/`/no_think` did not work against a live LM
+  Studio + Qwen3.5 setup — this may be model/build-specific.
+- **LM Studio's own default `/v1/models` reachability check isn't the same
+  as "the configured model is actually loaded at the right settings".** A
+  server can be reachable with the model downloaded but loaded (or about to
+  be lazily auto-loaded) at the wrong context length/TTL — see the whole
+  [LM Studio lifecycle management](#lm-studio-lifecycle-management) table
+  above, which exists entirely because of this gap.
+- **Test isolation: real `AgentSession`/`AICoderApp` instances use the real,
+  unmocked config**, which points at LM Studio's actual default endpoint.
+  `tests/test_loop.py` and `tests/test_tui.py` both carry an autouse
+  `_assume_model_already_loaded` fixture patching
+  `core.model.is_lmstudio_model_loaded` — without it, every test calling
+  `send()` would shell out to a real `lms ps` subprocess. If you add a new
+  test file that constructs a real session, check whether it needs the same
+  fixture (verify by running the suite with `lms` stripped from `PATH`).
 
 ---
 

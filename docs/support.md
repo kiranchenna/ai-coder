@@ -38,7 +38,7 @@ See your active settings any time with `aicoder --config`.
 | **Edits get declined / the agent loops** | small model struggling | rephrase the task, narrow it, or switch to a larger model |
 | **"Reached the step limit for this turn"** | task needed >12 tool steps | ask it to continue, or break the task up with `/plan <goal>` |
 | **`/init` stops after narrating what it'll do next, without doing it** | small model narrated instead of calling the tool | just say "continue" — it's a normal conversational session, not a special mode; a larger model tends to follow through more reliably |
-| **MCP servers don't load** | extra not installed / bad config | `pip install "ai-coder[mcp]"`; check the server `command`/`args` |
+| **MCP servers don't load** | extra not installed / bad config | `pip install "local-aicoder[mcp]"`; check the server `command`/`args` |
 | **"langchain-openai isn't installed"** | broken environment | `pip install langchain-openai` (it's a core dependency, so this should already be present) |
 | **Generated project won't run after `/dev build`** | the verify→fix loop hit its 3-round cap | read the printed failure, fix manually, or re-run `/dev build` / `/dev revisit <phase>` |
 | **Design feels generic / too slow** | wrong `devmode.profile` | speed: set `profile: fast`; depth: `thorough` (+ a `judge_model`) |

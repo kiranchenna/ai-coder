@@ -154,14 +154,55 @@ def test_is_lmstudio_model_downloaded_none_when_unreachable(monkeypatch):
     assert is_lmstudio_model_downloaded("anything") is None
 
 
+# ── is_lmstudio_model_loaded — read-only "is it in memory right now" check ──────
+
+def test_is_lmstudio_model_loaded_true_when_present_in_ps(monkeypatch):
+    from core.model import is_lmstudio_model_loaded
+
+    _mock_lms(monkeypatch, stdout='[{"type": "llm", "identifier": "loaded-model"}]')
+    assert is_lmstudio_model_loaded("loaded-model") is True
+    assert is_lmstudio_model_loaded("other-model") is False
+
+
+def test_is_lmstudio_model_loaded_ignores_non_llm_entries(monkeypatch):
+    """An embedding model with the same identifier shouldn't count — only
+    type == 'llm' entries represent the coding model this is checking for."""
+    from core.model import is_lmstudio_model_loaded
+
+    _mock_lms(monkeypatch, stdout='[{"type": "embedding", "identifier": "target"}]')
+    assert is_lmstudio_model_loaded("target") is False
+
+
+def test_is_lmstudio_model_loaded_false_when_unreachable(monkeypatch):
+    """False, not a raise — "can't tell" is treated the same as "not
+    loaded" so callers fall through to their own load attempt."""
+    from core.model import is_lmstudio_model_loaded
+
+    _mock_lms(monkeypatch, raise_missing=True)
+    assert is_lmstudio_model_loaded("anything") is False
+
+
+def _mock_context_length(monkeypatch, value):
+    """switch_lmstudio_model reads Config.model_context_length internally
+    (via a fresh `from core.config import get_config` each call) — mock the
+    module-level get_config so tests aren't coupled to whatever's in the
+    real ~/.aicoder/config.yaml on the machine running them."""
+    import core.config as config_mod
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(config_mod, "get_config", lambda: SimpleNamespace(model_context_length=value))
+
+
 def test_switch_lmstudio_model_unloads_other_llms_and_loads_target(monkeypatch):
     import json
     import subprocess
 
-    from core.model import switch_lmstudio_model
+    from core.model import LMSTUDIO_IDLE_UNLOAD_SECONDS, switch_lmstudio_model
 
+    _mock_context_length(monkeypatch, 8192)
     ps_payload = json.dumps([
-        {"type": "llm", "identifier": "old-model"},
+        {"type": "llm", "identifier": "old-model", "contextLength": 8192,
+         "ttlMs": LMSTUDIO_IDLE_UNLOAD_SECONDS * 1000},
         {"type": "embedding", "identifier": "embed-model"},  # must be left alone
     ])
     calls = []
@@ -178,19 +219,28 @@ def test_switch_lmstudio_model_unloads_other_llms_and_loads_target(monkeypatch):
     unload_calls = [c for c in calls if c[1] == "unload"]
     load_calls = [c for c in calls if c[1] == "load"]
     assert unload_calls == [["lms", "unload", "old-model"]]  # not the embedding model
-    assert load_calls == [["lms", "load", "new-model", "-y"]]
+    assert load_calls == [[
+        "lms", "load", "new-model",
+        "--context-length", "8192",
+        "--ttl", str(LMSTUDIO_IDLE_UNLOAD_SECONDS),
+        "-y",
+    ]]
 
 
-def test_switch_lmstudio_model_is_a_noop_when_already_loaded(monkeypatch):
+def test_switch_lmstudio_model_is_a_noop_when_already_loaded_at_the_right_context_and_ttl(monkeypatch):
     # Live-reproduced bug: `lms load` on an already-loaded modelKey doesn't
     # reuse it — it spins up a second, separately-identified instance,
     # silently doubling RAM usage. Must skip the load call entirely instead.
     import json
     import subprocess
 
-    from core.model import switch_lmstudio_model
+    from core.model import LMSTUDIO_IDLE_UNLOAD_SECONDS, switch_lmstudio_model
 
-    ps_payload = json.dumps([{"type": "llm", "identifier": "already-loaded"}])
+    _mock_context_length(monkeypatch, 8192)
+    ps_payload = json.dumps([{
+        "type": "llm", "identifier": "already-loaded", "contextLength": 8192,
+        "ttlMs": LMSTUDIO_IDLE_UNLOAD_SECONDS * 1000,
+    }])
     calls = []
 
     def fake_run(argv, **kwargs):
@@ -204,6 +254,108 @@ def test_switch_lmstudio_model_is_a_noop_when_already_loaded(monkeypatch):
 
     assert not any(c[1] == "load" for c in calls)
     assert not any(c[1] == "unload" for c in calls)  # the target itself is never unloaded
+
+
+def test_switch_lmstudio_model_reloads_when_context_length_is_mismatched(monkeypatch):
+    """Live-reproduced bug (twice, with two different models): a model can
+    already be loaded in LM Studio at some other context length (LM
+    Studio's own default, or left over from a previous session) that
+    doesn't match config.yaml's model.context_length. aicoder would then
+    build prompts sized for the *configured* length while LM Studio
+    silently truncates to the smaller *loaded* one, failing with "tokens to
+    keep... greater than the context length" on the first real turn — not
+    caught by the old "already loaded → skip" check, since that only looked
+    at the identifier, never the context length it was actually loaded at."""
+    import json
+    import subprocess
+
+    from core.model import LMSTUDIO_IDLE_UNLOAD_SECONDS, switch_lmstudio_model
+
+    _mock_context_length(monkeypatch, 16384)
+    # Loaded, but at 8192 — mismatched with the configured 16384.
+    ps_payload = json.dumps([{
+        "type": "llm", "identifier": "target-model", "contextLength": 8192,
+        "ttlMs": LMSTUDIO_IDLE_UNLOAD_SECONDS * 1000,
+    }])
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv[1] == "ps":
+            return _FakeCompletedProcess(stdout=ps_payload)
+        return _FakeCompletedProcess(stdout="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    switch_lmstudio_model("target-model")
+
+    unload_calls = [c for c in calls if c[1] == "unload"]
+    load_calls = [c for c in calls if c[1] == "load"]
+    assert unload_calls == [["lms", "unload", "target-model"]]
+    assert load_calls == [[
+        "lms", "load", "target-model",
+        "--context-length", "16384",
+        "--ttl", str(LMSTUDIO_IDLE_UNLOAD_SECONDS),
+        "-y",
+    ]]
+
+
+def test_switch_lmstudio_model_reloads_when_ttl_is_missing(monkeypatch):
+    """A model loaded without a TTL at all (loaded by hand via LM Studio's
+    own UI, or by an aicoder version from before this feature existed) must
+    not be treated as "already correctly loaded" — otherwise it would sit
+    there indefinitely, defeating the whole point of the idle-unload TTL."""
+    import json
+    import subprocess
+
+    from core.model import LMSTUDIO_IDLE_UNLOAD_SECONDS, switch_lmstudio_model
+
+    _mock_context_length(monkeypatch, 16384)
+    # Right context length, but no TTL at all (ttlMs: null, LM Studio's own
+    # representation for "no TTL set").
+    ps_payload = json.dumps([{
+        "type": "llm", "identifier": "target-model", "contextLength": 16384, "ttlMs": None,
+    }])
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv[1] == "ps":
+            return _FakeCompletedProcess(stdout=ps_payload)
+        return _FakeCompletedProcess(stdout="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    switch_lmstudio_model("target-model")
+
+    load_calls = [c for c in calls if c[1] == "load"]
+    assert load_calls == [[
+        "lms", "load", "target-model",
+        "--context-length", "16384",
+        "--ttl", str(LMSTUDIO_IDLE_UNLOAD_SECONDS),
+        "-y",
+    ]]
+
+
+def test_unload_lmstudio_model_shells_out_to_lms_unload(monkeypatch):
+    import subprocess
+
+    from core.model import unload_lmstudio_model
+
+    calls = []
+    monkeypatch.setattr(subprocess, "run",
+                        lambda argv, **kw: calls.append(argv) or _FakeCompletedProcess(stdout=""))
+    unload_lmstudio_model("target-model")
+    assert calls == [["lms", "unload", "target-model"]]
+
+
+def test_unload_lmstudio_model_raises_on_failure(monkeypatch):
+    import subprocess
+
+    from core.model import unload_lmstudio_model
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _FakeCompletedProcess(
+        stderr="no such model loaded", returncode=1))
+    with pytest.raises(RuntimeError):
+        unload_lmstudio_model("target-model")
 
 
 def test_is_lmstudio_reachable_returns_model_ids(monkeypatch):
@@ -273,7 +425,10 @@ def test_ensure_lmstudio_running_starts_the_server_and_loads_the_model(monkeypat
     assert model_mod.ensure_lmstudio_running("target-model") is True
     assert calls[0] == ["lms", "server", "start"]
     # switch_lmstudio_model("target-model") ran too — it `lms ps`'d then loaded it
-    assert ["lms", "load", "target-model", "-y"] in calls
+    # (with an explicit --context-length — see test_model_provider.py's
+    # switch_lmstudio_model tests for that specific behavior).
+    load_calls = [c for c in calls if c[1] == "load"]
+    assert len(load_calls) == 1 and load_calls[0][:2] == ["lms", "load"] and "target-model" in load_calls[0]
 
 
 def test_ensure_lmstudio_running_reports_progress_via_on_status(monkeypatch):

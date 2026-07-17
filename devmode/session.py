@@ -16,6 +16,7 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from core.console import SafeConsole
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.rule import Rule
@@ -41,12 +42,69 @@ def _decision_section(text: str) -> str:
     return body.strip()
 
 
+def _ask(question: str, default: str = "") -> str:
+    """Prompt.ask, TUI-aware: in the TUI, the reply is typed into the main
+    chat input like an ordinary message instead of a popup — a /develop
+    discuss loop asks a question at every phase, and a wall of modals each
+    showing nothing but a bare phase id ("requirements") as their "question"
+    was confirmed live to be genuinely confusing, not just unpolished.
+    Falls back to a normal Prompt.ask in the plain REPL (or if textual isn't
+    installed)."""
+    try:
+        from agent.tui import ask_inline, is_tui_active
+        if is_tui_active():
+            return ask_inline(question, default)
+    except ImportError:
+        pass
+    return Prompt.ask(question, default=default)
+
+
+def _confirm(question: str, default: bool = True) -> bool:
+    """Confirm.ask, TUI-aware — see _ask."""
+    try:
+        from agent.tui import ask_inline_confirm, is_tui_active
+        if is_tui_active():
+            return ask_inline_confirm(question, default)
+    except ImportError:
+        pass
+    return Confirm.ask(question, default=default)
+
+
 def _stream(messages, precise: bool = False, model: str | None = None) -> str:
-    """Stream a conversational model response to the terminal; return the text."""
+    """Stream a conversational model response; return the text.
+
+    In a real terminal (plain REPL), tokens are written live to stdout for a
+    "typing" effect — sys.stdout genuinely is the terminal there. Under the
+    TUI a raw stdout write bypasses the RichLog entirely — confirmed live,
+    it's invisible to the user rather than erroring, since nothing routes
+    stdout into the chat log — so the discuss loop's entire proposal/critique
+    text was silently never shown. The TUI path instead accumulates silently
+    (a status indicator elsewhere already shows a turn is running) and prints
+    the finished Markdown through `console` once, same as the main agent
+    loop's own final-answer rendering."""
     from core.model import get_chat_model
 
     llm = get_chat_model(precise=precise, model=model)
     acc = ""
+    try:
+        from agent.tui import is_tui_active
+        tui_active = is_tui_active()
+    except ImportError:  # pragma: no cover — textual is a base dependency
+        tui_active = False
+
+    if tui_active:
+        try:
+            for chunk in llm.stream(messages):
+                piece = chunk.content
+                if isinstance(piece, str) and piece:
+                    acc += piece
+        except Exception as e:  # noqa: BLE001
+            console.print(f"\n[red]⚠ Model error: {e}[/red]")
+            return acc
+        if acc:
+            console.print(Markdown(acc))
+        return acc
+
     console.print()
     try:
         for chunk in llm.stream(messages):
@@ -356,7 +414,7 @@ class DevSession:
             console.print("\n[dim]Reply, or type: [bold]done[/bold] · [bold]skip[/bold] · "
                           "[bold]revise[/bold] · [bold]pause[/bold][/dim]")
             try:
-                user = Prompt.ask(f"[bold yellow]{spec.id}[/bold yellow]").strip()
+                user = _ask(f"Your reply for the {spec.title} phase").strip()
             except (EOFError, KeyboardInterrupt):
                 return "pause", messages
             if not user:
@@ -856,7 +914,7 @@ class DevSession:
                           "dropped content. Skipping; use 'dev revisit "
                           f"{spec.id}' to change this phase safely.[/yellow]")
             return False
-        if not Confirm.ask(f"Apply this fix to the {spec.title} decision?", default=True):
+        if not _confirm(f"Apply this fix to the {spec.title} decision?", default=True):
             return False
         # Preserve the original discussion transcript if present.
         m = re.search(r"<details><summary>Discussion</summary>\n+(.*?)\n+</details>",
@@ -886,7 +944,7 @@ class DevSession:
                 f"[bold]{f['severity']}[/bold] → fix in [bold cyan]{f['target']}[/bold cyan]\n\n"
                 f"[bold]Issue:[/bold] {f['issue']}\n[bold]Proposed fix:[/bold] {f['fix']}",
                 title=f"[bold]Finding {i}/{len(findings)}[/bold]", border_style="yellow"))
-            if not Confirm.ask(f"Apply the proposed fix to {f['target']}?", default=True):
+            if not _confirm(f"Apply the proposed fix to {f['target']}?", default=True):
                 console.print("[dim]Skipped.[/dim]")
                 continue
             if self._apply_fix(f):
@@ -934,8 +992,8 @@ class DevSession:
             return
 
         console.print()
-        if Confirm.ask(f"The {spec.title} decision changed. Auto-resync the code to match?",
-                       default=True):
+        if _confirm(f"The {spec.title} decision changed. Auto-resync the code to match?",
+                    default=True):
             from devmode.resync import resync
             resync(self.workspace, spec.title, old_dec, new_dec)
 
@@ -952,7 +1010,7 @@ class DevSession:
             if st == "done" and not only:
                 continue
             console.print()
-            if not self.auto and st != "in_progress" and not Confirm.ask(
+            if not self.auto and st != "in_progress" and not _confirm(
                 f"[bold]Run phase: {spec.title}?[/bold] [dim]({spec.role})[/dim]", default=True
             ):
                 self._set_status(spec.id, "skipped")
